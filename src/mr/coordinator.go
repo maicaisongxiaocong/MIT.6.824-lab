@@ -111,6 +111,7 @@ func (c *Coordinator) initMapChanel(files []string) {
 	log.Println("all maps have been inited")
 }
 
+// niah1
 func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 	c.mu.Lock()
 
