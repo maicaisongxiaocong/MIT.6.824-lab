@@ -21,9 +21,7 @@ type T3 struct {
 	T3int999 int
 }
 
-//
 // test that we didn't break GOB.
-//
 func TestGOB(t *testing.T) {
 	e0 := errorCount
 
@@ -112,10 +110,8 @@ type T4 struct {
 	no  int
 }
 
-//
 // make sure we check capitalization
 // labgob prints one warning during this test.
-//
 func TestCapital(t *testing.T) {
 	e0 := errorCount
 
@@ -136,13 +132,11 @@ func TestCapital(t *testing.T) {
 	}
 }
 
-//
 // check that we warn when someone sends a default value over
 // RPC but the target into which we're decoding holds a non-default
 // value, which GOB seems not to overwrite as you'd expect.
 //
 // labgob does not print a warning.
-//
 func TestDefault(t *testing.T) {
 	e0 := errorCount
 
