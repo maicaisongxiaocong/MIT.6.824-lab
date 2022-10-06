@@ -20,9 +20,10 @@ const (
 // define a task struct
 // Arguments must be capitalized for using rpc
 type Task struct {
-	TaskId   int
-	TaskType TaskType
-	File     string
+	TaskId    int
+	TaskType  TaskType
+	File      string
+	NumReduce int
 }
 
 type Coordinator struct {
@@ -106,19 +107,19 @@ func (c *Coordinator) initMapChanel(files []string) {
 		taskTemp.TaskId = c.getTaskId()
 		taskTemp.TaskType = MapType
 		c.mapChanel <- taskTemp
+		taskTemp.NumReduce = c.reduceNum
 		log.Println("map is been inited :", taskTemp)
 	}
 	log.Println("all maps have been inited")
 }
 
-// niah1...
 func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 	c.mu.Lock()
 
 	defer c.mu.Unlock()
 	if len(c.mapChanel) > 0 {
-		reply = <-c.mapChanel
-		log.Println("reply:", reply)
+		*reply = *<-c.mapChanel //qufen reply = <-c.mapChanel
+		log.Printf("take a reply :%+v from mapChanne", reply)
 	}
 	return nil
 }

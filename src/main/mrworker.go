@@ -10,8 +10,10 @@ package main
 // Please do not change this file.
 //
 
-import "6.824/mr"
-import "os"
+import (
+	"6.824/mr"
+	"os"
+)
 import "fmt"
 
 func main() {
@@ -21,7 +23,9 @@ func main() {
 	}
 
 	//mapf, reducef := loadPlugin(os.Args[1])
+	mapf, _ := mr.LoadPlugin(os.Args[1])
 
 	//mr.Worker(mapf, reducef)
-	mr.GetTask()
+	task := mr.GetTask()
+	mr.DoMap(mapf, task)
 }

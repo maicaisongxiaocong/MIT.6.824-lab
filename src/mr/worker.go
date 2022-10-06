@@ -1,6 +1,13 @@
 package mr
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"plugin"
+	"strconv"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
@@ -78,15 +85,87 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	return false
 }
 
-func GetTask() {
+func GetTask() *Task {
 	args := ExampleArgs{}
 	reply := new(Task)
-	ok := call("Coordinator.DistributeTask", args, &reply)
+	ok := call("Coordinator.DistributeTask", args, reply)
 	if ok {
 		// reply.Y should be 100.
-		fmt.Println("reply:", reply)
+		fmt.Printf("get a reply : %+v\n", reply)
+		return reply
 	} else {
 		fmt.Printf("call failed!\n")
+		return nil
+	}
+}
+
+/*
+Map任务的处理流程：
+1,通过任务的fileName读取文件内容
+2,对读取的数据进行map处理生成中间key-value对
+3,对相同的key数据进行压缩(省略)
+4,创建一个二维数组，将map处理后生成的中间key-value对通过分区函数存储到不同的分区数组中
+5,为每个分区创建一个文件，并将当前分区的数据全部存入文件
+*/
+func DoMap(mapfunc func(filename string, contents string) []KeyValue, task *Task) {
+	//take the datas from the file of the task
+	var tempdata []KeyValue
+	filename := task.File
+	file, err := os.Open(filename)
+
+	if err != nil {
+		log.Fatalf("can not open %v\n", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v\n", filename)
+	}
+	file.Close()
+
+	//call mapfunc
+	res := mapfunc(filename, string(content))
+
+	tempdata = append(tempdata, res...)
+
+	//create different arrays for different reduces to deal with respectively
+	interdata := make([][]KeyValue, task.NumReduce)
+	for _, kv := range tempdata {
+		key := ihash(kv.Key) % task.NumReduce
+		interdata[key] = append(interdata[key], kv)
 	}
 
+	//create different output file for different reduce
+	for i := 0; i < task.NumReduce; i++ {
+		//outfilename = outfilename + string(task.TaskId) + string(i) //string(fid)并不能！(因为该转换会将数字直接转换为该数字对应的内码)
+		filename := "mr-out-" + strconv.Itoa(task.TaskId) + "-" + strconv.Itoa(i)
+		ofile, _ := os.Create(filename)
+		enc := json.NewEncoder(ofile)
+		for _, kv := range interdata[i] {
+			enc.Encode(kv) //has contained '/n'
+		}
+		ofile.Close()
+	}
+
+}
+
+// load the application Map and Reduce functions
+// from a plugin file, e.g. ../mrapps/wc.so
+func LoadPlugin(filename string) (func(string, string) []KeyValue, func(string, []string) string) {
+	p, err := plugin.Open(filename)
+	//fmt.Println(err)
+	if err != nil {
+		log.Fatalf("cannot load plugin %v,err:", filename, err)
+	}
+	xmapf, err := p.Lookup("Map")
+	if err != nil {
+		log.Fatalf("cannot find Map in %v", filename)
+	}
+	mapf := xmapf.(func(string, string) []KeyValue)
+	xreducef, err := p.Lookup("Reduce")
+	if err != nil {
+		log.Fatalf("cannot find Reduce in %v", filename)
+	}
+	reducef := xreducef.(func(string, []string) string)
+
+	return mapf, reducef
 }
