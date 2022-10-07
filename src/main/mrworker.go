@@ -23,9 +23,9 @@ func main() {
 	}
 
 	//mapf, reducef := loadPlugin(os.Args[1])
-	mapf, _ := mr.LoadPlugin(os.Args[1])
+	mapf, reducef := mr.LoadPlugin(os.Args[1])
 
-	//mr.Worker(mapf, reducef)
-	task := mr.GetTask()
-	mr.DoMap(mapf, task)
+	mr.Worker(mapf, reducef)
+	//task := mr.GetTask()
+	//mr.DoMap(mapf, task)
 }

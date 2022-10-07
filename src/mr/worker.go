@@ -27,13 +27,28 @@ func ihash(key string) int {
 }
 
 // main/mrworker.go calls this function.
-func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
-
+func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	// Your worker implementation here.
-
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+
+	//1 取任务，并判断是maptask还是reducetask
+	//2.1 若是maptask则调用doMap(),并且将任务状态改为Done
+	flag := true
+	for flag {
+		task := GetTask()
+		if task == nil { //mapchannel里面没有任务了
+			break
+		}
+
+		if task.TaskType == MapType {
+			DoMap(mapf, task)
+			callMarkTaskDone(task)
+		} else {
+			//2.2 todo:reduceType
+			println("reduce has not defined!")
+		}
+	}
 
 }
 
@@ -88,10 +103,10 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 func GetTask() *Task {
 	args := ExampleArgs{}
 	reply := new(Task)
-	ok := call("Coordinator.DistributeTask", args, reply)
+	ok := call("Coordinator.DistributeTask", &args, reply)
 	if ok {
 		// reply.Y should be 100.
-		fmt.Printf("get a reply : %+v\n", reply)
+		fmt.Printf("get a maptask : %+v\n", reply)
 		return reply
 	} else {
 		fmt.Printf("call failed!\n")
@@ -143,6 +158,7 @@ func DoMap(mapfunc func(filename string, contents string) []KeyValue, task *Task
 		for _, kv := range interdata[i] {
 			enc.Encode(kv) //has contained '/n'
 		}
+		fmt.Println("生成一个一个中间文件：", filename)
 		ofile.Close()
 	}
 
@@ -168,4 +184,13 @@ func LoadPlugin(filename string) (func(string, string) []KeyValue, func(string, 
 	reducef := xreducef.(func(string, []string) string)
 
 	return mapf, reducef
+}
+
+func callMarkTaskDone(reply *Task) {
+	args := ExampleArgs{}
+	if err := call("Coordinator.MarkTaskDone", &args, reply); err != true {
+		fmt.Println("CallMarkTaskDone fail!")
+	} else {
+		fmt.Printf("任务%+v已经完成！\n") //todo:改为已经进入reducestage
+	}
 }
