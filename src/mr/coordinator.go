@@ -158,7 +158,7 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 				reply.Statue = running
 				fmt.Printf("%+v,已经从mapchanne取出，状态变为running\n", reply)
 			} else {
-				fmt.Println("coordinator的mapchanne里的maptask以及取完了！")
+				fmt.Println("coordinator的mapchanne里的maptask已经取完了！")
 				if ok := c.checkCoordinator(); ok {
 					c.toNextStage()
 					fmt.Println("coordinator 由mapstage改为done了！ ") //todo:改为reducestage
