@@ -53,7 +53,7 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 				//这个状态表示 mapchannel或者reducechannel已经为空，但是call()函数也要返回一个空的reply过来，
 			}
 		case AllDoneYype: //表示coordinator已经处于Done的状态
-			flag = false
+			break
 		}
 
 	}

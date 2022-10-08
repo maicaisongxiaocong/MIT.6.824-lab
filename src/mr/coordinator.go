@@ -180,10 +180,10 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 
 // coordinator进入下一个阶段（mapstage到reducestage或者reducestage到done）
 func (c *Coordinator) toNextStage() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	//c.mu.Lock() DistributeTask()已经加锁了，还没解锁，这个地方不能加锁
+	//defer c.mu.Unlock()
 
-	if c.coordinateStage == MapStage {
+	if c.coordinateStage == MapStage { //todo：存在data race 但是不知道原因
 		c.coordinateStage = CoordinateDone
 		fmt.Println("coordinator 进入done阶段")
 	} //todo:增加reduceStage
@@ -209,7 +209,7 @@ func (c *Coordinator) checkCoordinator() bool { //todo: reducestage
 			}
 		}
 	}
-	// fmt.Printf("doneMap:%d; undonemap:%d\n", doneMap, unDoneMap)
+	fmt.Printf("doneMap:%d; undonemap:%d\n", doneMap, unDoneMap)
 	if doneMap > 0 && unDoneMap == 0 { //todo:判断reducestage结束
 		return true
 	} else {
@@ -219,6 +219,7 @@ func (c *Coordinator) checkCoordinator() bool { //todo: reducestage
 
 // reply从worker那边传过来参数无法到达coordinator
 func (c *Coordinator) MarkTaskDone(args *Task, reply *Task) error {
+
 	//reply.Statue = Done //todo:改为reducestage
 	c.taskContainer.taskMap[args.TaskId].Statue = Done
 	return nil
