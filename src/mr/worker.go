@@ -191,6 +191,6 @@ func callMarkTaskDone(reply *Task) {
 	if err := call("Coordinator.MarkTaskDone", &args, reply); err != true {
 		fmt.Println("CallMarkTaskDone fail!")
 	} else {
-		fmt.Printf("任务%+v已经完成！\n") //todo:改为已经进入reducestage
+		fmt.Printf("任务%+v已经完成！\n", Task{}) //todo:改为已经进入reducestage
 	}
 }

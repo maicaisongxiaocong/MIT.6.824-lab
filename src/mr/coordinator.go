@@ -154,7 +154,7 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 	case MapStage:
 		{
 			if len(c.mapChanel) > 0 {
-				reply = <-c.mapChanel
+				*reply = *<-c.mapChanel
 				reply.Statue = running
 				fmt.Printf("%+v,已经从mapchanne取出，状态变为running\n", reply)
 			} else {
