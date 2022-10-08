@@ -37,19 +37,27 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 	flag := true
 	for flag {
 		task := GetTask()
-		if task == nil { //mapchannel里面没有任务了
+		if task == nil { //nil表示call()函数调用失败
+			fmt.Printf("call failed!\n")
 			break
 		}
 
-		if task.TaskType == MapType {
-			DoMap(mapf, task)
-			callMarkTaskDone(task)
-		} else {
-			//2.2 todo:reduceType
-			println("reduce has not defined!")
+		switch task.TaskType {
+		case MapType:
+			{
+				DoMap(mapf, task)
+				callMarkTaskDone(task)
+			}
+		case NullType: //todo: reduceType
+			{
+				//这个状态表示 mapchannel或者reducechannel已经为空，但是call()函数也要返回一个空的reply过来，
+			}
+		case AllDoneYype: //表示coordinator已经处于Done的状态
+			flag = false
 		}
-	}
 
+	}
+	fmt.Println("worker done")
 }
 
 // example function to show how to make an RPC call to the coordinator.
@@ -82,6 +90,7 @@ func CallExample() {
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
+
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
@@ -106,7 +115,9 @@ func GetTask() *Task {
 	ok := call("Coordinator.DistributeTask", &args, reply)
 	if ok {
 		// reply.Y should be 100.
-		fmt.Printf("get a maptask : %+v\n", reply)
+		if reply.TaskType != NullType && reply.TaskType != AllDoneYype {
+			fmt.Printf("get a maptask : %+v\n", reply)
+		}
 		return reply
 	} else {
 		fmt.Printf("call failed!\n")
@@ -152,7 +163,7 @@ func DoMap(mapfunc func(filename string, contents string) []KeyValue, task *Task
 	//create different output file for different reduce
 	for i := 0; i < task.NumReduce; i++ {
 		//outfilename = outfilename + string(task.TaskId) + string(i) //string(fid)并不能！(因为该转换会将数字直接转换为该数字对应的内码)
-		filename := "mr-out-" + strconv.Itoa(task.TaskId) + "-" + strconv.Itoa(i)
+		filename := "mr-out-" + strconv.Itoa(task.TaskId) + "-" + strconv.Itoa(i+1)
 		ofile, _ := os.Create(filename)
 		enc := json.NewEncoder(ofile)
 		for _, kv := range interdata[i] {
@@ -187,10 +198,10 @@ func LoadPlugin(filename string) (func(string, string) []KeyValue, func(string, 
 }
 
 func callMarkTaskDone(reply *Task) {
-	args := ExampleArgs{}
-	if err := call("Coordinator.MarkTaskDone", &args, reply); err != true {
+	ok := call("Coordinator.MarkTaskDone", reply, reply) //第二个参数的值传不到coordinator，
+	if ok == false {
 		fmt.Println("CallMarkTaskDone fail!")
 	} else {
-		fmt.Printf("任务%+v已经完成！\n", Task{}) //todo:改为已经进入reducestage
+		fmt.Printf("任务%+v已经完成！\n", reply) //todo:改为已经进入reducestage
 	}
 }

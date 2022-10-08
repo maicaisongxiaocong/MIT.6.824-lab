@@ -28,4 +28,5 @@ func main() {
 	mr.Worker(mapf, reducef)
 	//task := mr.GetTask()
 	//mr.DoMap(mapf, task)
+	fmt.Println("worker done!")
 }

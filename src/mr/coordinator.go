@@ -16,14 +16,16 @@ type TaskType int
 const (
 	MapType = iota
 	ReduceType
+	NullType //当mapchannel或者reducechannel里面的数据取完了，但是还有进程去，就把需要传递的空任务状态设置为Null，避免对空任务进行操作
+	AllDoneYype
 )
 
 type TaskStatue int
 
 const (
 	Waitting = iota
-	running
-	done
+	Running
+	Done
 )
 
 type CoordinateStage int
@@ -99,7 +101,7 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	if c.coordinateStage == done {
+	if c.coordinateStage == CoordinateDone {
 		ret = true
 	}
 
@@ -155,20 +157,22 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 		{
 			if len(c.mapChanel) > 0 {
 				*reply = *<-c.mapChanel
-				reply.Statue = running
+				//todo:改为worker执行完domap()后再改状态
+				reply.Statue = Running
+				c.taskContainer.taskMap[reply.TaskId].Statue = Running
 				fmt.Printf("%+v,已经从mapchanne取出，状态变为running\n", reply)
 			} else {
 				fmt.Println("coordinator的mapchanne里的maptask已经取完了！")
+				reply.TaskType = NullType //空类型，在worker端执行task的时候，单独作处理，否则会出现，读不到了文件的情况
 				if ok := c.checkCoordinator(); ok {
 					c.toNextStage()
 					fmt.Println("coordinator 由mapstage改为done了！ ") //todo:改为reducestage
 				}
 			}
-			break
 		}
-	default: //todo:reducestage
+	case CoordinateDone: //todo: reducestage
 		{
-			fmt.Println("reduce has not prepared!")
+			reply.TaskType = AllDoneYype //给worker一个信息：所有任务都已经完成，可以结束进程了
 		}
 	}
 	return nil
@@ -176,40 +180,46 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 
 // coordinator进入下一个阶段（mapstage到reducestage或者reducestage到done）
 func (c *Coordinator) toNextStage() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.coordinateStage == MapStage {
-		c.coordinateStage = done
+		c.coordinateStage = CoordinateDone
+		fmt.Println("coordinator 进入done阶段")
 	} //todo:增加reduceStage
 }
 
 // 定义一个判断coordinator状态是否为done或者mapstage结束的函数
-func (c *Coordinator) checkCoordinator() bool {
+func (c *Coordinator) checkCoordinator() bool { //todo: reducestage
+
 	//1 统计taskcontainer里面的任务，未完成/已完成的maptask/reducetask的数目
 	var doneMap, unDoneMap, doneReduce, unDoneReduce int
-
 	for _, tempTask := range c.taskContainer.taskMap {
 		if tempTask.TaskType == MapType {
-			if tempTask.Statue == done {
+			if tempTask.Statue == Done {
 				doneMap++
 			} else {
 				unDoneMap++
 			}
 		} else {
-			if tempTask.Statue == done {
+			if tempTask.Statue == Done {
 				doneReduce++
 			} else {
 				unDoneReduce++
 			}
 		}
 	}
+	// fmt.Printf("doneMap:%d; undonemap:%d\n", doneMap, unDoneMap)
 	if doneMap > 0 && unDoneMap == 0 { //todo:判断reducestage结束
-
 		return true
 	} else {
 		return false
 	}
 }
 
-func (c *Coordinator) MarkTaskDone(args *ExampleArgs, reply *Task) error {
-	reply.Statue = done //todo:改为reducestage
+// reply从worker那边传过来参数无法到达coordinator
+func (c *Coordinator) MarkTaskDone(args *Task, reply *Task) error {
+	//reply.Statue = Done //todo:改为reducestage
+	c.taskContainer.taskMap[args.TaskId].Statue = Done
 	return nil
 }
