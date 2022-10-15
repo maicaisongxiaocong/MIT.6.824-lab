@@ -2,7 +2,10 @@ package mr
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 )
 import "net"
@@ -11,7 +14,6 @@ import "net/rpc"
 import "net/http"
 
 // define a enum about TaskType
-type TaskType int
 
 const (
 	MapType = iota
@@ -40,8 +42,8 @@ const (
 // Arguments must be capitalized for using rpc
 type Task struct {
 	TaskId    int
-	TaskType  TaskType
-	File      string
+	TaskType  int
+	Files     []string
 	NumReduce int
 	Statue    TaskStatue
 }
@@ -134,7 +136,7 @@ func (c *Coordinator) initMapChanel(files []string) {
 
 	for _, file := range files {
 		var taskTemp = new(Task)
-		taskTemp.File = file
+		taskTemp.Files = append(taskTemp.Files, file)
 		taskTemp.TaskId = c.getTaskId()
 		taskTemp.TaskType = MapType
 		taskTemp.Statue = Waitting
@@ -152,7 +154,7 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 	c.mu.Lock()
 
 	defer c.mu.Unlock()
-	switch c.coordinateStage {
+	switch c.coordinateStage { //todo: 代码重构
 	case MapStage:
 		{
 			if len(c.mapChanel) > 0 {
@@ -166,11 +168,26 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 				reply.TaskType = NullType //空类型，在worker端执行task的时候，单独作处理，否则会出现，读不到了文件的情况
 				if ok := c.checkCoordinator(); ok {
 					c.toNextStage()
-					fmt.Println("coordinator 由mapstage改为done了！ ") //todo:改为reducestage
 				}
 			}
 		}
-	case CoordinateDone: //todo: reducestage
+	case ReduceStage:
+		{
+			if len(c.reduceChanel) > 0 {
+				*reply = *<-c.reduceChanel
+				//todo:改为worker执行完domap()后再改状态
+				reply.Statue = Running
+				c.taskContainer.taskMap[reply.TaskId].Statue = Running
+				fmt.Printf("%+v,已经从reducechanne取出，状态变为running\n", reply)
+			} else {
+				fmt.Println("coordinator的reducechanne里的reducetask已经取完了！")
+				reply.TaskType = NullType //空类型，在worker端执行task的时候，单独作处理，否则会出现，读不到了文件的情况
+				if ok := c.checkCoordinator(); ok {
+					c.toNextStage()
+				}
+			}
+		}
+	case CoordinateDone:
 		{
 			reply.TaskType = AllDoneYype //给worker一个信息：所有任务都已经完成，可以结束进程了
 		}
@@ -183,14 +200,24 @@ func (c *Coordinator) toNextStage() {
 	//c.mu.Lock() DistributeTask()已经加锁了，还没解锁，这个地方不能加锁
 	//defer c.mu.Unlock()
 
+	if c.coordinateStage == CoordinateDone {
+		fmt.Println("coordinator 已经在done阶段了")
+		return
+	}
+
 	if c.coordinateStage == MapStage { //todo：存在data race 但是不知道原因
+		c.coordinateStage = ReduceStage
+		fmt.Println("coordinator 从map阶段进入reduce阶段")
+		//启动reduce任务
+		c.initReduceTask()
+	} else {
 		c.coordinateStage = CoordinateDone
-		fmt.Println("coordinator 进入done阶段")
-	} //todo:增加reduceStage
+		fmt.Println("coordinate 从reduce阶段进入done阶段")
+	}
 }
 
 // 定义一个判断coordinator状态是否为done或者mapstage结束的函数
-func (c *Coordinator) checkCoordinator() bool { //todo: reducestage
+func (c *Coordinator) checkCoordinator() bool {
 
 	//1 统计taskcontainer里面的任务，未完成/已完成的maptask/reducetask的数目
 	var doneMap, unDoneMap, doneReduce, unDoneReduce int
@@ -201,7 +228,7 @@ func (c *Coordinator) checkCoordinator() bool { //todo: reducestage
 			} else {
 				unDoneMap++
 			}
-		} else {
+		} else if tempTask.TaskType == ReduceType {
 			if tempTask.Statue == Done {
 				doneReduce++
 			} else {
@@ -209,18 +236,58 @@ func (c *Coordinator) checkCoordinator() bool { //todo: reducestage
 			}
 		}
 	}
-	fmt.Printf("doneMap:%d; undonemap:%d\n", doneMap, unDoneMap)
-	if doneMap > 0 && unDoneMap == 0 { //todo:判断reducestage结束
+	fmt.Printf("doneMap:%d; undonemap:%d; donereduce:%d;undonereduce:%d\n", doneMap, unDoneMap, doneReduce, unDoneReduce)
+	if doneMap > 0 && unDoneMap == 0 && doneReduce == 0 && unDoneReduce == 0 ||
+		doneMap == 0 && unDoneMap == 0 && doneReduce > 0 && unDoneReduce == 0 {
 		return true
-	} else {
-		return false
 	}
+
+	return false
 }
 
 // reply从worker那边传过来参数无法到达coordinator
 func (c *Coordinator) MarkTaskDone(args *Task, reply *Task) error {
 
-	//reply.Statue = Done //todo:改为reducestage
+	//reply.Statue = Done
 	c.taskContainer.taskMap[args.TaskId].Statue = Done
+
 	return nil
+}
+
+//1 initReduceTask()在mapstage转为reducestage时候调用
+
+// reduce个数从coordinate里面取
+func (c *Coordinator) initReduceTask() {
+	//1 从当前目录下读文件,并把文件mr-out-x-y中y相等的值存在taskId=y的task的文件名数组里面
+
+	for i := 1; i <= c.reduceNum; i++ {
+		reducefiles := getreducefile(i)
+		taskTemp := Task{
+			TaskId:    i,
+			TaskType:  ReduceType,
+			NumReduce: c.reduceNum,
+			Statue:    Waitting,
+			Files:     reducefiles,
+		}
+		fmt.Printf("%dreducefile:%v\n", taskTemp.Files)
+		c.reduceChanel <- &taskTemp
+		c.taskContainer.taskMap[i] = &taskTemp
+	}
+	fmt.Println("reducechannel 已经准备好了!")
+
+}
+
+// 取当前路径下的相关文件
+func getreducefile(reducePos int) []string {
+	var s []string
+	path, _ := os.Getwd()
+	files, _ := ioutil.ReadDir(path)
+	for _, fi := range files {
+		// 匹配对应的reduce文件
+		if strings.HasPrefix(fi.Name(), "mr-out-") && strings.HasSuffix(fi.Name(), strconv.Itoa(reducePos)) {
+			s = append(s, fi.Name())
+		}
+	}
+
+	return s
 }

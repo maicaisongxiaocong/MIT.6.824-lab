@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"os"
 	"plugin"
+	"sort"
 	"strconv"
 )
 import "log"
@@ -17,6 +18,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -45,10 +54,15 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		switch task.TaskType {
 		case MapType:
 			{
-				DoMap(mapf, task)
+				doMap(mapf, task)
 				callMarkTaskDone(task)
 			}
-		case NullType: //todo: reduceType
+		case ReduceType:
+			{
+				doReduce(reducef, task)
+				callMarkTaskDone(task)
+			}
+		case NullType:
 			{
 				//这个状态表示 mapchannel或者reducechannel已经为空，但是call()函数也要返回一个空的reply过来，
 			}
@@ -57,7 +71,7 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		}
 
 	}
-	fmt.Println("worker done")
+	fmt.Println("worker done !")
 }
 
 // example function to show how to make an RPC call to the coordinator.
@@ -116,11 +130,10 @@ func GetTask() *Task {
 	if ok {
 		// reply.Y should be 100.
 		if reply.TaskType != NullType && reply.TaskType != AllDoneYype {
-			fmt.Printf("get a maptask : %+v\n", reply)
+			fmt.Printf("get a task : %+v\n", reply)
 		}
 		return reply
 	} else {
-		fmt.Printf("call failed!\n")
 		return nil
 	}
 }
@@ -133,10 +146,10 @@ Map任务的处理流程：
 4,创建一个二维数组，将map处理后生成的中间key-value对通过分区函数存储到不同的分区数组中
 5,为每个分区创建一个文件，并将当前分区的数据全部存入文件
 */
-func DoMap(mapfunc func(filename string, contents string) []KeyValue, task *Task) {
+func doMap(mapfunc func(filename string, contents string) []KeyValue, task *Task) {
 	//take the datas from the file of the task
 	var tempdata []KeyValue
-	filename := task.File
+	filename := task.Files[0]
 	file, err := os.Open(filename)
 
 	if err != nil {
@@ -202,6 +215,59 @@ func callMarkTaskDone(reply *Task) {
 	if ok == false {
 		fmt.Println("CallMarkTaskDone fail!")
 	} else {
-		fmt.Printf("任务%+v已经完成！\n", reply) //todo:改为已经进入reducestage
+		if reply.TaskType == MapType {
+			fmt.Printf("map任务%+v已经完成！\n\n", reply)
+		}
+
+		if reply.TaskType == ReduceType {
+			fmt.Printf("reduce任务%+v已经完成！\n\n", reply)
+
+		}
+
 	}
+}
+
+func doReduce(reducefunc func(key string, values []string) string, task *Task) {
+
+	//将task的files读进values string[]
+	var values []KeyValue
+	for _, file := range task.Files {
+		fi, err := os.Open(file)
+		if err != nil {
+			fmt.Printf("file:%v打开失败,原因:%v", file, err)
+		}
+		dec := json.NewDecoder(fi)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			values = append(values, kv)
+		}
+		fi.Close()
+	}
+	//对字符串进行排序
+	sort.Sort(ByKey(values)) //todo:int()表示什么?
+
+	//统计相同单词的起始和结束下标
+	outFileName := "out-put-" + strconv.Itoa(task.TaskId)
+	ofile, _ := os.Create(outFileName)
+	i := 0
+	for i < len(values) {
+		j := i + 1
+		for j < len(values) && values[j].Key == values[i].Key {
+			j++
+		}
+		tempValues := []string{}
+		for k := i; k < j; k++ {
+			tempValues = append(tempValues, values[k].Value)
+		}
+		output := reducefunc(values[i].Key, tempValues)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", values[i].Key, output)
+		i = j
+	}
+	fmt.Println("生成一个最终文件：", outFileName)
+	ofile.Close()
 }
