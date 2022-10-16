@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 import "net"
 import "os"
@@ -45,11 +46,16 @@ type Task struct {
 	TaskType  int
 	Files     []string
 	NumReduce int
-	Statue    TaskStatue
+}
+
+type TaskMetaInfo struct {
+	TaskPointer *Task
+	Statue      TaskStatue
+	StartTime   time.Time
 }
 
 type TaskContainer struct {
-	taskMap map[int]*Task
+	taskCon map[int]*TaskMetaInfo //用指针,否则不能呢个修改其总内容
 }
 
 type Coordinator struct {
@@ -122,7 +128,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		mapNum:          len(files),
 		reduceNum:       nReduce,
 		coordinateStage: MapStage,
-		taskContainer:   TaskContainer{taskMap: make(map[int]*Task, len(files)+nReduce)},
+		taskContainer:   TaskContainer{taskCon: make(map[int]*TaskMetaInfo, len(files)+nReduce)},
 	}
 	fmt.Println("coordinate is prepared!")
 
@@ -139,11 +145,14 @@ func (c *Coordinator) initMapChanel(files []string) {
 		taskTemp.Files = append(taskTemp.Files, file)
 		taskTemp.TaskId = c.getTaskId()
 		taskTemp.TaskType = MapType
-		taskTemp.Statue = Waitting
 		taskTemp.NumReduce = c.reduceNum
 
 		c.mapChanel <- taskTemp
-		c.taskContainer.taskMap[taskTemp.TaskId] = taskTemp
+		taskTempMeta := TaskMetaInfo{
+			TaskPointer: taskTemp,
+			Statue:      Waitting,
+		}
+		c.taskContainer.taskCon[taskTemp.TaskId] = &taskTempMeta
 
 		log.Printf("job:%+v has brought  into map\n", taskTemp)
 	}
@@ -159,9 +168,8 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 		{
 			if len(c.mapChanel) > 0 {
 				*reply = *<-c.mapChanel
-				//todo:改为worker执行完domap()后再改状态
-				reply.Statue = Running
-				c.taskContainer.taskMap[reply.TaskId].Statue = Running
+				c.taskContainer.taskCon[reply.TaskId].Statue = Running
+				c.taskContainer.taskCon[reply.TaskId].StartTime = time.Now()
 				fmt.Printf("%+v,已经从mapchanne取出，状态变为running\n", reply)
 			} else {
 				fmt.Println("coordinator的mapchanne里的maptask已经取完了！")
@@ -175,9 +183,8 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 		{
 			if len(c.reduceChanel) > 0 {
 				*reply = *<-c.reduceChanel
-				//todo:改为worker执行完domap()后再改状态
-				reply.Statue = Running
-				c.taskContainer.taskMap[reply.TaskId].Statue = Running
+				c.taskContainer.taskCon[reply.TaskId].Statue = Running
+				c.taskContainer.taskCon[reply.TaskId].StartTime = time.Now()
 				fmt.Printf("%+v,已经从reducechanne取出，状态变为running\n", reply)
 			} else {
 				fmt.Println("coordinator的reducechanne里的reducetask已经取完了！")
@@ -219,14 +226,14 @@ func (c *Coordinator) checkCoordinator() bool {
 
 	//1 统计taskcontainer里面的任务，未完成/已完成的maptask/reducetask的数目
 	var doneMap, unDoneMap, doneReduce, unDoneReduce int
-	for _, tempTask := range c.taskContainer.taskMap {
-		if tempTask.TaskType == MapType {
+	for _, tempTask := range c.taskContainer.taskCon {
+		if tempTask.TaskPointer.TaskType == MapType {
 			if tempTask.Statue == Done {
 				doneMap++
 			} else {
 				unDoneMap++
 			}
-		} else if tempTask.TaskType == ReduceType {
+		} else if tempTask.TaskPointer.TaskType == ReduceType {
 			if tempTask.Statue == Done {
 				doneReduce++
 			} else {
@@ -234,7 +241,7 @@ func (c *Coordinator) checkCoordinator() bool {
 			}
 		}
 	}
-	fmt.Printf("doneMap:%d; undonemap:%d; donereduce:%d;undonereduce:%d\n", doneMap, unDoneMap, doneReduce, unDoneReduce)
+	fmt.Printf("doneMap:%d; undonemap:%d; donereduce:%d;undonereduce:%d\n\n", doneMap, unDoneMap, doneReduce, unDoneReduce)
 	if doneMap > 0 && unDoneMap == 0 && doneReduce == 0 && unDoneReduce == 0 ||
 		doneMap == 0 && unDoneMap == 0 && doneReduce > 0 && unDoneReduce == 0 {
 		return true
@@ -247,7 +254,7 @@ func (c *Coordinator) checkCoordinator() bool {
 func (c *Coordinator) MarkTaskDone(args *Task, reply *Task) error {
 
 	//reply.Statue = Done
-	c.taskContainer.taskMap[args.TaskId].Statue = Done
+	c.taskContainer.taskCon[args.TaskId].Statue = Done
 
 	return nil
 }
@@ -264,11 +271,14 @@ func (c *Coordinator) initReduceTask() {
 			TaskId:    i,
 			TaskType:  ReduceType,
 			NumReduce: c.reduceNum,
-			Statue:    Waitting,
 			Files:     reducefiles,
 		}
 		c.reduceChanel <- &taskTemp
-		c.taskContainer.taskMap[i] = &taskTemp
+		taskTempMeta := TaskMetaInfo{
+			TaskPointer: &taskTemp,
+			Statue:      Waitting,
+		}
+		c.taskContainer.taskCon[i] = &taskTempMeta
 		fmt.Printf("任务:%+v已经进入reduceChannle", taskTemp)
 	}
 	fmt.Println("reducechannel 已经准备好了!")
