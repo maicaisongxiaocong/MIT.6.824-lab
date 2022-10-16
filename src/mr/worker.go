@@ -176,7 +176,7 @@ func doMap(mapfunc func(filename string, contents string) []KeyValue, task *Task
 	//create different output file for different reduce
 	for i := 0; i < task.NumReduce; i++ {
 		//outfilename = outfilename + string(task.TaskId) + string(i) //string(fid)并不能！(因为该转换会将数字直接转换为该数字对应的内码)
-		filename := "mr-out-" + strconv.Itoa(task.TaskId) + "-" + strconv.Itoa(i+1)
+		filename := "mr-tmp-" + strconv.Itoa(task.TaskId) + "-" + strconv.Itoa(i+1)
 		ofile, _ := os.Create(filename)
 		enc := json.NewEncoder(ofile)
 		for _, kv := range interdata[i] {
@@ -250,7 +250,7 @@ func doReduce(reducefunc func(key string, values []string) string, task *Task) {
 	sort.Sort(ByKey(values)) //todo:int()表示什么?
 
 	//统计相同单词的起始和结束下标
-	outFileName := "out-put-" + strconv.Itoa(task.TaskId)
+	outFileName := "mr-out-" + strconv.Itoa(task.TaskId)
 	ofile, _ := os.Create(outFileName)
 	i := 0
 	for i < len(values) {

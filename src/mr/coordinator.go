@@ -197,8 +197,6 @@ func (c *Coordinator) DistributeTask(args *ExampleArgs, reply *Task) error {
 
 // coordinator进入下一个阶段（mapstage到reducestage或者reducestage到done）
 func (c *Coordinator) toNextStage() {
-	//c.mu.Lock() DistributeTask()已经加锁了，还没解锁，这个地方不能加锁
-	//defer c.mu.Unlock()
 
 	if c.coordinateStage == CoordinateDone {
 		fmt.Println("coordinator 已经在done阶段了")
@@ -269,9 +267,9 @@ func (c *Coordinator) initReduceTask() {
 			Statue:    Waitting,
 			Files:     reducefiles,
 		}
-		fmt.Printf("%dreducefile:%v\n", taskTemp.Files)
 		c.reduceChanel <- &taskTemp
 		c.taskContainer.taskMap[i] = &taskTemp
+		fmt.Printf("任务:%+v已经进入reduceChannle", taskTemp)
 	}
 	fmt.Println("reducechannel 已经准备好了!")
 
@@ -284,7 +282,7 @@ func getreducefile(reducePos int) []string {
 	files, _ := ioutil.ReadDir(path)
 	for _, fi := range files {
 		// 匹配对应的reduce文件
-		if strings.HasPrefix(fi.Name(), "mr-out-") && strings.HasSuffix(fi.Name(), strconv.Itoa(reducePos)) {
+		if strings.HasPrefix(fi.Name(), "mr-tmp-") && strings.HasSuffix(fi.Name(), strconv.Itoa(reducePos)) {
 			s = append(s, fi.Name())
 		}
 	}
