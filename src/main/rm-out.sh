@@ -1,2 +1,2 @@
+rm -f mr-tmp-*
 rm -f mr-out-*
-rm -f out-put-*

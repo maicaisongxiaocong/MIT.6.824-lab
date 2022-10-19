@@ -134,6 +134,9 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	c.initMapChanel(files)
+
+	//检查任务集合里面的任务执行时间是否超过10s
+	//go c.CheckTaskContainer();
 	c.server()
 	return &c
 }
@@ -298,4 +301,26 @@ func getreducefile(reducePos int) []string {
 	}
 
 	return s
+}
+
+// 遍历TaskContainer,将那些执行时间大于10s的任务重新放回channel
+func (c *Coordinator) CheckTaskContainer() { //todo:若是大于10s后,原任务又执行成功了,则会对任务重复执行
+
+	for _, taskMetaInfoTemp := range c.taskContainer.taskCon {
+		if taskMetaInfoTemp.Statue == Running &&
+			time.Since(taskMetaInfoTemp.StartTime) > 9*time.Second { //必须在running状态,且超过十秒才能重载
+			if taskMetaInfoTemp.TaskPointer.TaskType == MapType {
+
+				c.mapChanel <- taskMetaInfoTemp.TaskPointer
+
+				taskMetaInfoTemp.Statue = Waitting
+				fmt.Printf("任务:%+v重新加入mapchannel\n", *taskMetaInfoTemp.TaskPointer)
+			} else {
+				c.reduceChanel <- taskMetaInfoTemp.TaskPointer
+
+				taskMetaInfoTemp.Statue = Waitting
+				fmt.Printf("任务:%+v重新加入reducechannel\n", *taskMetaInfoTemp.TaskPointer)
+			}
+		}
+	}
 }

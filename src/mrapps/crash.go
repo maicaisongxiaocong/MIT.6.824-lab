@@ -32,7 +32,7 @@ func maybeCrash() {
 }
 
 func Map(filename string, contents string) []mr.KeyValue {
-	maybeCrash()
+	maybeCrash() //把这个放在后代码最后面还需要考虑文件重复处理的问题
 
 	kva := []mr.KeyValue{}
 	kva = append(kva, mr.KeyValue{"a", filename})
