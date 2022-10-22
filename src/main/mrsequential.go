@@ -57,6 +57,7 @@ func main() {
 	//
 
 	sort.Sort(ByKey(intermediate))
+	fmt.Println("map任务完成!")
 
 	oname := "mr-out-0"
 	ofile, _ := os.Create(oname)
@@ -79,10 +80,9 @@ func main() {
 
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
 		i = j
 	}
-
+	fmt.Println("执行结束!")
 	ofile.Close()
 }
 
