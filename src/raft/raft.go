@@ -52,6 +52,12 @@ type ApplyMsg struct {
 
 var HeartBeatTimeout = 100 * time.Millisecond
 
+// 日志项
+type LogEntry struct {
+	Term    int
+	Command interface{}
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu sync.Mutex // Lock to protect shared access to this peer's state
@@ -73,7 +79,15 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	logs        []LogEntry
+	appliedChan chan ApplyMsg
 
+	committedIndex int
+	appliedIndex   int
+
+	//todo: 作用区别
+	nextIndex  []int
+	matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -148,6 +162,10 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term        int
 	CandidateId int
+
+	//2b
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
@@ -165,13 +183,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	//fmt.Printf("收到投票请求!	%d号任务(term:%d)收到来自%d号任务(term:%d)\n", rf.me, rf.term, args.CandidateId, args.Term)
 
-	reply.VoteGranted = false //candidate不能给其他candidate投票
+	reply.VoteGranted = false
 	reply.Term = rf.term
 
+	//情况1: 请求raft的任期小,拒绝投票
 	if args.Term < rf.term {
 		return
 	}
 
+	//情况2:请求raft的任期大,同意投票,如果当前raft为candidate,变为follower
 	if args.Term > rf.term { //candidate 发现比自己高的任期的candidate发来投票请求
 		rf.term = args.Term
 
@@ -183,9 +203,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 
 	}
+	//获得当前raft的logs的最新logEntry的index和term
+	currentLogIndex := len(rf.logs) - 1
+	currentLogTerm := 0
+	if currentLogIndex > 0 {
+		currentLogTerm = rf.logs[currentLogIndex].Term
+	}
 
-	//仅有follower(candidate的voteFor为自己的编号)且没有投过票的服务能投票.
-	if rf.voteFor == -1 || rf.voteFor == args.CandidateId {
+	//情况3:未投过票的raft,或者在情况2中的raft(由candidate变为follower的raft),满足figure2中RequestVote第二个条件情况,则投票
+	if (rf.voteFor == -1 || rf.voteFor == args.CandidateId) &&
+		currentLogIndex <= args.LastLogIndex && currentLogTerm <= args.LastLogTerm {
 
 		reply.VoteGranted = true
 		rf.term = args.Term
@@ -239,7 +266,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		return false
 	}
 
-	//情况2: 允许投票,
+	//情况2: 允许投票
 	if reply.VoteGranted == true {
 		fmt.Printf("	同意投票! 	%d号任务(term:%d) 同意给	%d号任务(term:%d) 投票\n", server, rf.term, rf.me, reply.Term)
 		if rf.voteCount < len(rf.peers)/2 {
@@ -247,9 +274,18 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		}
 
 		if rf.voteCount >= len(rf.peers)/2 {
+			//2b 变为leader后,又接到投票,直接返回(因为超过一半投票后就变为leader,后面的投票可能已经投了但由于网络还没有收到)
+			if rf.status == "leader" {
+				return true
+			}
+
 			fmt.Printf("新leader!!     第%d号任务已经有选票%d,已经进入leader状态\n", rf.me, rf.voteCount)
 			rf.status = "leader"
 			rf.timer.Reset(HeartBeatTimeout)
+			//2b 初始化nextIndex[],默认leader的所有日志都已经匹配,所有下一个需要匹配的logEntry为len(rf.logs)
+			for i, _ := range rf.nextIndex {
+				rf.nextIndex[i] = len(rf.logs)
+			}
 		}
 
 	} else {
@@ -261,7 +297,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 			rf.voteFor = -1
 			rf.voteCount = 0
-			rf.timer.Reset(time.Duration(150+rand.Intn(200)) * time.Millisecond)
+			rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+			rf.timer.Reset(rf.overtime)
 		}
 	}
 
@@ -418,9 +455,19 @@ func (rf *Raft) ticker() {
 					if i == rf.me {
 						continue
 					}
+					arg := RequestVoteArgs{
+						Term:         rf.term,
+						CandidateId:  rf.me,
+						LastLogIndex: len(rf.logs),
+						LastLogTerm:  0,
+					}
+					if len(rf.logs) > 0 {
+						arg.LastLogTerm = rf.logs[arg.LastLogIndex-1].Term
+					}
+
 					reply := RequestVoteReply{}
 					fmt.Printf("发起投票! 	第%d号任务(term:%d)向第%d号任务发起投票\n", rf.me, rf.term, i)
-					go rf.sendRequestVote(i, &RequestVoteArgs{Term: rf.term, CandidateId: rf.me}, &reply)
+					go rf.sendRequestVote(i, &arg, &reply)
 				}
 			case "leader":
 				rf.timer.Reset(HeartBeatTimeout)
@@ -467,6 +514,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.voteFor = -1
 	rf.voteCount = 0
+
+	//2b
+	rf.logs = make([]LogEntry, 0)
+	rf.appliedChan = applyCh
+
+	rf.appliedIndex = -1
+	rf.committedIndex = -1
+
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.nextIndex = make([]int, len(rf.peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
