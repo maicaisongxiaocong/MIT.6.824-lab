@@ -204,13 +204,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	}
 	//获得当前raft的logs的最新logEntry的index和term
-	currentLogIndex := len(rf.logs) - 1
+	currentLogIndex := len(rf.logs)
 	currentLogTerm := 0
 	if currentLogIndex > 0 {
 		currentLogTerm = rf.logs[currentLogIndex].Term
 	}
 
-	//情况3:未投过票的raft,或者在情况2中的raft(由candidate变为follower的raft),满足figure2中RequestVote第二个条件情况,则投票
+	//情况3:未投过票的raft,或者在情况2中的raft(由candidate变为follower的raft),
+	//满足figure2中RequestVote第二个条件情况(论文5.4.1提到的election construction:保证选出的leader必须含有所有committed的entries),则投票
 	if (rf.voteFor == -1 || rf.voteFor == args.CandidateId) &&
 		currentLogIndex <= args.LastLogIndex && currentLogTerm <= args.LastLogTerm {
 
@@ -284,6 +285,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.timer.Reset(HeartBeatTimeout)
 			//2b 初始化nextIndex[],默认leader的所有日志都已经匹配,所有下一个需要匹配的logEntry为len(rf.logs)
 			for i, _ := range rf.nextIndex {
+				//2b: (initialized to leader last log index + 1)
 				rf.nextIndex[i] = len(rf.logs)
 			}
 		}
@@ -308,6 +310,12 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 type AppendEntriesArgs struct {
 	Term     int
 	LeaderId int
+	//2b 参照figure2中AppendEntries RPC
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
@@ -396,6 +404,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+	//1: if this server isn't the leader, returns false.
+	if rf.status != "leader" {
+		return index, term, isLeader
+	}
+
+	//2: 附加
+	entry := LogEntry{Command: command, Term: rf.term}
+	rf.logs = append(rf.logs, entry)
+	index = len(rf.logs) - 1
 
 	return index, term, isLeader
 }
@@ -462,7 +479,7 @@ func (rf *Raft) ticker() {
 						LastLogTerm:  0,
 					}
 					if len(rf.logs) > 0 {
-						arg.LastLogTerm = rf.logs[arg.LastLogIndex-1].Term
+						arg.LastLogTerm = rf.logs[arg.LastLogIndex].Term
 					}
 
 					reply := RequestVoteReply{}
@@ -477,7 +494,9 @@ func (rf *Raft) ticker() {
 					}
 
 					reply := AppendEntriesReply{}
-					go rf.sendAppendEntries(j, &AppendEntriesArgs{Term: rf.term, LeaderId: rf.me}, &reply)
+					arg := AppendEntriesArgs{
+						Term: rf.term, LeaderId: rf.me}
+					go rf.sendAppendEntries(j, &arg, &reply)
 				}
 
 			}
@@ -516,11 +535,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteCount = 0
 
 	//2b
-	rf.logs = make([]LogEntry, 0)
+	rf.logs = make([]LogEntry, 0) //first index is 1
 	rf.appliedChan = applyCh
 
-	rf.appliedIndex = -1
-	rf.committedIndex = -1
+	rf.appliedIndex = 0
+	rf.committedIndex = 0
 
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.nextIndex = make([]int, len(rf.peers))
