@@ -72,9 +72,8 @@ type Raft struct {
 	electionStartTime time.Time //新一轮投票开始时间
 	voteFor           int       //为谁投票,-1表示还没投票
 	voteCount         int       //获得总票数,初始为0
-
-	overtime time.Duration
-	timer    *time.Ticker
+	overtime          time.Duration
+	timer             *time.Ticker
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -84,6 +83,8 @@ type Raft struct {
 
 	committedIndex int
 	appliedIndex   int
+
+	appendCount int //统计成功追加日志的raft有多少个
 
 	//todo: 作用区别
 	nextIndex  []int
@@ -204,7 +205,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	}
 	//获得当前raft的logs的最新logEntry的index和term
-	currentLogIndex := len(rf.logs)
+	//panic: runtime error: index out of range [1] with length 1
+	//注意-1
+	currentLogIndex := len(rf.logs) - 1
 	currentLogTerm := 0
 	if currentLogIndex > 0 {
 		currentLogTerm = rf.logs[currentLogIndex].Term
@@ -267,33 +270,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		return false
 	}
 
-	//情况2: 允许投票
-	if reply.VoteGranted == true {
-		fmt.Printf("	同意投票! 	%d号任务(term:%d) 同意给	%d号任务(term:%d) 投票\n", server, rf.term, rf.me, reply.Term)
-		if rf.voteCount < len(rf.peers)/2 {
-			rf.voteCount++
-		}
+	//情况2: 不允许投票,
+	if reply.VoteGranted == false {
 
-		if rf.voteCount >= len(rf.peers)/2 {
-			//2b 变为leader后,又接到投票,直接返回(因为超过一半投票后就变为leader,后面的投票可能已经投了但由于网络还没有收到)
-			if rf.status == "leader" {
-				return true
-			}
-
-			fmt.Printf("新leader!!     第%d号任务已经有选票%d,已经进入leader状态\n", rf.me, rf.voteCount)
-			rf.status = "leader"
-			rf.timer.Reset(HeartBeatTimeout)
-			//2b 初始化nextIndex[],默认leader的所有日志都已经匹配,所有下一个需要匹配的logEntry为len(rf.logs)
-			for i, _ := range rf.nextIndex {
-				//2b: (initialized to leader last log index + 1)
-				rf.nextIndex[i] = len(rf.logs)
-			}
-		}
-
-	} else {
-		//情况3: 不允许投票,
-		fmt.Printf("	拒绝投票! 	%d号任务(term:%d) 拒绝给	%d号任务(term:%d) 投票\n", server, rf.term, rf.me, reply.Term)
 		if reply.Term > rf.term {
+			fmt.Printf("	拒绝投票!(任期旧) 	%d号任务(term:%d) 拒绝给	%d号任务(term:%d) 投票\n", server, rf.term, rf.me, reply.Term)
 			rf.status = "follower"
 			rf.term = reply.Term
 
@@ -301,7 +282,39 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.voteCount = 0
 			rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
 			rf.timer.Reset(rf.overtime)
+		} else {
+			fmt.Printf("	拒绝投票!(日志旧) 	%d号任务(term:%d) 拒绝给	%d号任务(term:%d) 投票\n", server, rf.term, rf.me, reply.Term)
+			//这里是因为  candidate’s log is not at
+			//least as up-to-date as receiver’s log,
 		}
+
+		return false
+	}
+
+	//情况3: 允许投票,记录票数
+	fmt.Printf("	同意投票! 	%d号任务(term:%d) 同意给	%d号任务(term:%d) 投票\n", server, rf.term, rf.me, reply.Term)
+	if rf.voteCount <= len(rf.peers)/2 {
+		rf.voteCount++
+	}
+
+	if rf.voteCount > len(rf.peers)/2 {
+		// 变为leader后,又接到投票,直接返回(因为超过一半投票后就变为leader,后面的投票可能已经投了但由于网络还没有收到)
+		if rf.status == "leader" {
+			return true
+		}
+
+		rf.status = "leader"
+		fmt.Printf("新leader!!     第%d号任务已经有选票%d,已经进入leader状态\n", rf.me, rf.voteCount)
+		//2b 初始化nextIndex[],默认leader的所有日志都已经匹配,所有下一个需要匹配的logEntry为len(rf.logs)
+		for i, _ := range rf.nextIndex {
+			if i == rf.me {
+				continue
+			}
+			//2b: (initialized to leader last log index + 1)
+			rf.nextIndex[i] = len(rf.logs)
+		}
+		rf.timer.Reset(HeartBeatTimeout)
+
 	}
 
 	return true
@@ -311,9 +324,11 @@ type AppendEntriesArgs struct {
 	Term     int
 	LeaderId int
 	//2b 参照figure2中AppendEntries RPC
+
 	PrevLogIndex int
 	PrevLogTerm  int
-	Entries      []LogEntry
+
+	Entries []LogEntry
 
 	LeaderCommit int
 }
@@ -327,26 +342,68 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Printf("收到日志追加请求!		raft%v(preLogindex:%v)发给raft%v(lastLogIndex:%v)的追加请求\n", args.LeaderId, args.PrevLogIndex, rf.me, (len(rf.logs) - 1))
+
 	// Your code here (2A, 2B).
-	//	fmt.Printf("收到心跳!	%d号任务(term:%d)收到来自%d号任务(term:%d)的心跳!,\n", rf.me, rf.term, args.LeaderId, args.Term)
-	//情况1: 收到的rpc的term太旧
+
+	//情况1: 收到的rpc的term太旧,拒绝追加
+	//1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.term {
-		reply.Term = rf.term
+		reply.Term = rf.term //此时leader的term小于该raft的term
 		reply.Success = false
+		return
+	}
 
-	} else {
-		//情况2: 收到的rpc的term 比自己的term大或相等
-		rf.status = "follower"
-		rf.term = args.Term
+	//情况2: index或者term不匹配
+	//2, Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
+	currentIndex := len(rf.logs) - 1
+	currentTerm := 0
+	if currentIndex > 0 {
+		//panic: runtime error: index out of range [1] with length 1
+		// currentTerm := len(rf.logs) - 1,必须减1
+		currentTerm = rf.logs[currentIndex].Term
+	}
 
-		reply.Success = true
-		rf.term = args.Term
+	if args.PrevLogIndex > currentIndex || args.PrevLogTerm != currentTerm {
+		reply.Term = rf.term //此时leader的term和该raft的term应该相等
+		reply.Success = false
+		return
+	}
 
-		rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
-		rf.timer.Reset(rf.overtime)
+	//以下情况返回成功
+	reply.Success = true
+	reply.Term = rf.term
 
-		rf.voteCount = 0
-		rf.voteFor = -1
+	//情况3: 日志不为空,删除该raft的logs匹配日志项后面的所有日志项,然后追加日志
+	if len(args.Entries) != 0 {
+		//3, If an existing entry conflicts with a new one (same index but different terms),
+		//delete the existing entry and all that follow it (§5.3)
+		rf.logs = rf.logs[:args.PrevLogIndex+1]
+
+		//4, Append any new entries not already in the log
+		rf.logs = append(rf.logs, args.Entries...)
+
+	}
+	//情况4: 心跳功能
+	rf.status = "follower"
+	rf.term = args.Term
+
+	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+	rf.timer.Reset(rf.overtime)
+
+	rf.voteCount = 0
+	rf.voteFor = -1
+
+	//情况5: commit日志功能
+	//5: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	if args.LeaderCommit > rf.committedIndex {
+		rf.committedIndex = func(a int, b int) int {
+			if a < b {
+				return a
+			}
+			return b
+		}(args.LeaderCommit, len(rf.logs)-1) // len(rf.logs) - 1
+		fmt.Printf("同步committedndex!		raft%d(committedIndex:%v)给raft%d(committedIndex:%v)\n", args.LeaderId, args.LeaderCommit, rf.me, rf.committedIndex)
 	}
 
 }
@@ -368,9 +425,12 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		return false
 	}
 
-	//情况2: 心跳不允许
+	//日志追加被拒绝
 	if reply.Success == false {
+
+		//情况2: 若是因为任期太旧,leader转为follower
 		if reply.Term > rf.term {
+			fmt.Printf("追加日志失败!(任期旧)		%d号任务给%d号任务追加日志\n", rf.me, server)
 			rf.status = "follower"
 			rf.term = reply.Term
 
@@ -378,10 +438,54 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			rf.voteCount = 0
 			rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
 			rf.timer.Reset(rf.overtime)
+			//情况3: 若是因为PrevLogIndex或PrevLogTerm不匹配,nextindex减1,重传rpc
+		} else {
+			fmt.Printf("追加日志失败!(index不匹配)		%d号任务给%d号任务追加日志\n", rf.me, server)
+			rf.nextIndex[server]--
+
+			reply := AppendEntriesReply{}
+
+			arg := AppendEntriesArgs{
+				Term:     args.Term,
+				LeaderId: args.LeaderId,
+
+				PrevLogIndex: args.PrevLogIndex - 1, //减少1
+				PrevLogTerm:  0,
+				Entries:      args.Entries,
+
+				LeaderCommit: args.LeaderCommit,
+			}
+
+			if arg.PrevLogIndex > 0 {
+				arg.PrevLogTerm = rf.logs[arg.PrevLogIndex].Term
+			}
+			go rf.sendAppendEntries(server, &arg, &reply)
 		}
+		return false
 	}
 
-	fmt.Printf("心跳回复!		%d号任务给%d号任务发送心跳,结果:%v\n", rf.me, server, reply.Success)
+	//情况4: 没有日志,心跳功能成功
+	if len(args.Entries) == 0 {
+		fmt.Printf("追加日志成功!(心跳)		%d号任务给%d号任务追加日志\n", rf.me, server)
+		return true
+	}
+
+	//情况5: 有日志,追加成功,则该改变对应的nextIndex,统计追加成功的raft个数
+	rf.nextIndex[server] += len(args.Entries)
+	fmt.Printf("追加日志成功!		%d号任务给%d号任务追加日志\n", rf.me, server)
+
+	if rf.appendCount <= len(rf.peers)/2 {
+		rf.appendCount++
+	} else {
+		//日志已经已经committed了,不用再
+		if args.LeaderCommit < rf.committedIndex {
+			return true
+		}
+
+		rf.committedIndex += len(args.Entries) - 1 //这个地方应该-1(index = 0不是日志)
+		fmt.Printf("成功被大多数raft接受!		leader %dcommittedIndex:%v\n", rf.me, server)
+		rf.appendCount = 1 //初始化追加数量,方便下一次追加
+	}
 
 	return true
 }
@@ -401,18 +505,25 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := false
 
 	// Your code here (2B).
 	//1: if this server isn't the leader, returns false.
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	if rf.status != "leader" {
 		return index, term, isLeader
 	}
 
 	//2: 附加
+	isLeader = true
+
 	entry := LogEntry{Command: command, Term: rf.term}
 	rf.logs = append(rf.logs, entry)
 	index = len(rf.logs) - 1
+	fmt.Printf("客户提交请求!	lastLagIndex = %v\n", len(rf.logs)-1)
 
 	return index, term, isLeader
 }
@@ -475,10 +586,10 @@ func (rf *Raft) ticker() {
 					arg := RequestVoteArgs{
 						Term:         rf.term,
 						CandidateId:  rf.me,
-						LastLogIndex: len(rf.logs),
+						LastLogIndex: len(rf.logs) - 1,
 						LastLogTerm:  0,
 					}
-					if len(rf.logs) > 0 {
+					if len(rf.logs) > 1 {
 						arg.LastLogTerm = rf.logs[arg.LastLogIndex].Term
 					}
 
@@ -488,14 +599,38 @@ func (rf *Raft) ticker() {
 				}
 			case "leader":
 				rf.timer.Reset(HeartBeatTimeout)
+				LogsTemp := rf.logs //保证下面AppendEntries线程操作的是同一个logs
+
 				for j, _ := range rf.peers {
 					if j == rf.me {
 						continue
 					}
-
+					//准备参数
 					reply := AppendEntriesReply{}
+
 					arg := AppendEntriesArgs{
-						Term: rf.term, LeaderId: rf.me}
+						Term:     rf.term,
+						LeaderId: rf.me,
+
+						PrevLogIndex: 0,
+						PrevLogTerm:  0,
+						Entries:      nil,
+
+						LeaderCommit: rf.committedIndex,
+					}
+
+					arg.PrevLogIndex = rf.nextIndex[j] - 1
+
+					if arg.PrevLogIndex > 0 {
+						arg.PrevLogTerm = LogsTemp[arg.PrevLogIndex].Term
+					}
+
+					//paper:If last log index ≥ nextIndex for a follower:
+					if rf.nextIndex[j] <= len(LogsTemp)-1 {
+						// 保证循环各个raft追加过程中,logs[]一样,引入LogsTemp
+						arg.Entries = append(arg.Entries, LogsTemp[rf.nextIndex[j]:]...)
+					}
+
 					go rf.sendAppendEntries(j, &arg, &reply)
 				}
 
@@ -535,13 +670,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteCount = 0
 
 	//2b
-	rf.logs = make([]LogEntry, 0) //first index is 1
+	rf.appendCount = 1 //统计追加日志成功的raft的个数
+
+	rf.logs = make([]LogEntry, 1) //paper: first index is 1
 	rf.appliedChan = applyCh
 
 	rf.appliedIndex = 0
 	rf.committedIndex = 0
 
+	//todo: 还不知道有什么用
 	rf.matchIndex = make([]int, len(rf.peers))
+
 	rf.nextIndex = make([]int, len(rf.peers))
 
 	// initialize from state persisted before a crash
@@ -550,5 +689,37 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
+	go rf.synchronizeAppliedIndex()
+
 	return rf
+}
+
+// 同步appliedndex
+func (rf *Raft) synchronizeAppliedIndex() {
+
+	for true {
+
+		time.Sleep(50 * time.Millisecond)
+
+		rf.mu.Lock()
+		//只有leader能够同步自己的appliedIndex,其他只能通过appendntries() 被迫同步
+		if rf.status != "leader" {
+			rf.mu.Unlock()
+			continue
+		}
+
+		for rf.appliedIndex < rf.committedIndex {
+			fmt.Printf("提交日志到状态机!	当前appliedIndex:%v  committedIndex%v  lastlogIndex:%v\n", rf.appliedIndex, rf.committedIndex, len(rf.logs)-1)
+			rf.appliedIndex++
+
+			am := ApplyMsg{
+				CommandValid: true,
+				Command:      rf.logs[rf.appliedIndex].Command,
+				CommandIndex: rf.appliedIndex,
+			}
+			rf.appliedChan <- am
+		}
+
+		rf.mu.Unlock()
+	}
 }
