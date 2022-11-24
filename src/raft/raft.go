@@ -342,7 +342,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("收到日志追加请求!		raft%v(preLogindex:%v)发给raft%v(lastLogIndex:%v)的追加请求\n", args.LeaderId, args.PrevLogIndex, rf.me, (len(rf.logs) - 1))
+	fmt.Printf("收到日志追加请求!		raft%v(preLogindex:%v;committedIndex:%v;logs:%v)发给raft%v(lastLogIndex:%v;committedIndex:%v)的追加请求\n", args.LeaderId, args.PrevLogIndex, args.LeaderCommit, args.Entries, rf.me, (len(rf.logs) - 1), rf.committedIndex)
 
 	// Your code here (2A, 2B).
 
@@ -482,8 +482,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			return true
 		}
 
-		rf.committedIndex += len(args.Entries) - 1 //这个地方应该-1(index = 0不是日志)
-		fmt.Printf("成功被大多数raft接受!		leader %dcommittedIndex:%v\n", rf.me, server)
+		rf.committedIndex = rf.committedIndex + len(args.Entries) //- 1 //这个地方应该-1(index = 0不是日志)
+		fmt.Printf("成功被大多数raft接受!		leader(%d) committedIndex:%v\n", rf.me, rf.committedIndex)
 		rf.appendCount = 1 //初始化追加数量,方便下一次追加
 	}
 
@@ -521,9 +521,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = true
 
 	entry := LogEntry{Command: command, Term: rf.term}
+	fmt.Printf("客户提交请求!	start lastLagIndex = %v;logs:%v", len(rf.logs)-1, rf.logs)
 	rf.logs = append(rf.logs, entry)
 	index = len(rf.logs) - 1
-	fmt.Printf("客户提交请求!	lastLagIndex = %v\n", len(rf.logs)-1)
+	fmt.Printf("	end lastLagIndex = %v;logs:%v\n", len(rf.logs)-1, rf.logs)
 
 	return index, term, isLeader
 }
@@ -703,13 +704,15 @@ func (rf *Raft) synchronizeAppliedIndex() {
 
 		rf.mu.Lock()
 		//只有leader能够同步自己的appliedIndex,其他只能通过appendntries() 被迫同步
-		if rf.status != "leader" {
+		//if rf.status != "leader" || rf.appliedIndex == rf.committedIndex {
+		if rf.appliedIndex == rf.committedIndex {
 			rf.mu.Unlock()
 			continue
 		}
 
+		fmt.Printf("raft(%v)提交日志到状态机!	start appliedIndex:%v  committedIndex%v  lastlogIndex:%v", rf.me, rf.appliedIndex, rf.committedIndex, len(rf.logs)-1)
 		for rf.appliedIndex < rf.committedIndex {
-			fmt.Printf("提交日志到状态机!	当前appliedIndex:%v  committedIndex%v  lastlogIndex:%v\n", rf.appliedIndex, rf.committedIndex, len(rf.logs)-1)
+
 			rf.appliedIndex++
 
 			am := ApplyMsg{
@@ -719,6 +722,7 @@ func (rf *Raft) synchronizeAppliedIndex() {
 			}
 			rf.appliedChan <- am
 		}
+		fmt.Printf("	end appliedIndex:%v\n", rf.appliedIndex)
 
 		rf.mu.Unlock()
 	}
