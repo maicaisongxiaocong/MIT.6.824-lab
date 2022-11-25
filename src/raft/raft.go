@@ -101,7 +101,7 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (2A).
 	term = rf.term
-	isleader = rf.status == "leader"
+	isleader = (rf.status == "leader")
 	return term, isleader
 }
 
@@ -256,6 +256,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	time.Sleep(10 * time.Millisecond)
 
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	for ok == false {
@@ -283,7 +284,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
 			rf.timer.Reset(rf.overtime)
 		} else {
-			fmt.Printf("	拒绝投票!(日志旧) 	%d号任务(term:%d) 拒绝给	%d号任务(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
+			fmt.Printf("	拒绝投票!(日志旧或者已经投票) 	%d号任务(term:%d) 拒绝给	%d号任务(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
 			//这里是因为  candidate’s log is not at
 			//least as up-to-date as receiver’s log,
 		}
@@ -345,7 +346,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("收到日志追加请求!		raft%v(preLogindex:%v;committedIndex:%v;logs:%v)发给raft%v(lastLogIndex:%v;committedIndex:%v)的追加请求\n", args.LeaderId, args.PrevLogIndex, args.LeaderCommit, args.Entries, rf.me, (len(rf.logs) - 1), rf.committedIndex)
+	fmt.Printf("收到日志追加请求!\n收到日志追加请求! raft%v(term:%v;preLogindex:%v;committedIndex:%v;logs:%v)\n收到日志追加请求! 发给raft%v(term:%v;lastLogIndex:%v;committedIndex:%v)的追加请求\n", args.Term, args.LeaderId, args.PrevLogIndex, args.LeaderCommit, args.Entries, rf.me, rf.term, (len(rf.logs) - 1), rf.committedIndex)
 
 	// Your code here (2A, 2B).
 
@@ -400,7 +401,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//情况5: commit日志功能
 	//5: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.committedIndex {
-		fmt.Printf("同步committedndex!		raft%d(committedIndex:%v)给raft%d(committedIndex:%v)(len(rf.logs) : %v)\n", args.LeaderId, args.LeaderCommit, rf.me, rf.committedIndex, len(rf.logs)-1)
+		fmt.Printf("同步committedndex!\n同步committedndex! raft%d(committedIndex:%v)\n同步committedndex! 给raft%d(committedIndex:%v)(lastLagIndex: %v)\n", args.LeaderId, args.LeaderCommit, rf.me, rf.committedIndex, len(rf.logs)-1)
 		rf.committedIndex = func(a int, b int) int {
 			if a < b {
 				return a
@@ -530,10 +531,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	entry := LogEntry{Command: command, Term: rf.term}
 	fmt.Println("----------------------------------分割线------------------------------------------")
-	fmt.Printf("客户提交请求!	start lastLagIndex = %v;logs:%v", len(rf.logs)-1, rf.logs)
+	fmt.Printf("客户提交请求!	start lastLagIndex = %v;\n logs:%v\n", len(rf.logs)-1, rf.logs)
 	rf.logs = append(rf.logs, entry)
 	index = len(rf.logs) - 1
-	fmt.Printf("	end lastLagIndex = %v;logs:%v\n", len(rf.logs)-1, rf.logs)
+	term = rf.term
+	fmt.Printf("	end lastLagIndex = %v;\n logs:%v\n", len(rf.logs)-1, rf.logs)
 
 	return index, term, isLeader
 }
@@ -587,7 +589,7 @@ func (rf *Raft) ticker() {
 
 				rf.voteFor = rf.me
 				rf.voteCount = 1 //rf.voteCount++错误,率先进入第三轮选举就会被当选
-				fmt.Printf("(轮数:%d)candidate!!!		第%d号任务已经进入candidate状态\n", rf.term, rf.me)
+				fmt.Printf("(轮数:%d)candidate!!!		第%d号任务(term:%v)已经进入candidate状态\n", rf.term, rf.me, rf.term)
 
 				for i := 0; i < len(rf.peers); i++ {
 					if i == rf.me {
@@ -599,12 +601,13 @@ func (rf *Raft) ticker() {
 						LastLogIndex: len(rf.logs) - 1,
 						LastLogTerm:  0,
 					}
-					if len(rf.logs) > 1 {
+					if arg.LastLogIndex > 0 {
 						arg.LastLogTerm = rf.logs[arg.LastLogIndex].Term
 					}
 
 					reply := RequestVoteReply{}
 					fmt.Printf("发起投票! 	第%d号任务(term:%d)向第%d号任务发起投票\n", rf.me, rf.term, i)
+
 					go rf.sendRequestVote(i, &arg, &reply)
 				}
 			case "leader":
