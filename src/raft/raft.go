@@ -157,6 +157,13 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
+const (
+	OldTerm = iota
+	OldLog
+	AlreadyVote
+	SuccessVote
+)
+
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
@@ -175,6 +182,8 @@ type RequestVoteReply struct {
 	// Your data here (2A).
 	Term        int
 	VoteGranted bool
+
+	Sign int
 }
 
 // example RequestVote RPC handler.
@@ -182,55 +191,70 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//fmt.Printf("收到投票请求!	%d号任务(term:%d)收到来自%d号任务(term:%d)\n", rf.me, rf.term, args.CandidateId, args.Term)
 
 	reply.VoteGranted = false
 	reply.Term = rf.term
 
-	//情况1: 请求raft的任期小,拒绝投票
+	//情况1: 请求raft的任期小,拒绝
 	if args.Term < rf.term {
+		reply.Sign = OldTerm
 		return
 	}
 
-	//情况2:请求raft的任期大,同意投票,如果当前raft为candidate,变为follower
+	//情况2: 已经投票,且不是投的args.CandidateId,拒绝
+	if args.Term == rf.term && rf.voteFor != -1 && rf.voteFor != args.CandidateId {
+		reply.Sign = AlreadyVote
+		return
+	}
+
+	//情况3: 日志不是最新的,拒绝
+	//(论文5.4.1提到的election construction:
+	//If the logs have last entries with different terms, then
+	//the log with the later term is more up-to-date. If the logs
+	//end with the same term, then whichever log is longer is
+	//more up-to-date.
+
+	//获得当前raft的logs的最新logEntry的index和term
+	//panic: runtime error: index out of range [1] with length 1
+	//注意-1
+	currentLogIndex := len(rf.logs) - 1
+	currentLogTerm := 0
+
+	if currentLogIndex > 0 {
+		currentLogTerm = rf.logs[currentLogIndex].Term
+	}
+
+	if currentLogTerm > args.LastLogTerm ||
+		(currentLogTerm == args.LastLogTerm && currentLogIndex > args.LastLogIndex) {
+		reply.Sign = OldLog
+		return
+	}
+
+	//剩下的情况同意投票
+
+	//情况4:请求raft的任期大,同意投票,如果当前raft为candidate,变为follower
 	if args.Term > rf.term { //candidate 发现比自己高的任期的candidate发来投票请求
 		rf.term = args.Term
 
 		rf.voteFor = -1
 		rf.voteCount = 0
 
-		if rf.status == "candidate" {
+		if rf.status != "candidate" {
 			rf.status = "follower"
 		}
 
 	}
-	//获得当前raft的logs的最新logEntry的index和term
-	//panic: runtime error: index out of range [1] with length 1
-	//注意-1
-	currentLogIndex := len(rf.logs) - 1
-	currentLogTerm := 0
-	if currentLogIndex > 0 {
-		currentLogTerm = rf.logs[currentLogIndex].Term
-	}
 
-	//情况3:未投过票的raft,或者在情况2中的raft(由candidate变为follower的raft),
-	//(论文5.4.1提到的election construction:
-	//If the logs have last entries with different terms, then
-	//the log with the later term is more up-to-date. If the logs
-	//end with the same term, then whichever log is longer is
-	//more up-to-date.
-	if (rf.voteFor == -1 || rf.voteFor == args.CandidateId) &&
-		(currentLogTerm < args.LastLogTerm ||
-			(currentLogTerm == args.LastLogTerm && currentLogIndex <= args.LastLogIndex)) {
+	//情况5:未投过票的raft,或者在情况2中的raft(由candidate变为follower的raft),
 
-		reply.VoteGranted = true
-		rf.term = args.Term
+	reply.VoteGranted = true
+	reply.Sign = SuccessVote
 
-		rf.voteFor = args.CandidateId
+	rf.voteFor = args.CandidateId
 
-		rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
-		rf.timer.Reset(rf.overtime)
-	}
+	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+	rf.timer.Reset(rf.overtime)
+
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -261,7 +285,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	time.Sleep(10 * time.Millisecond)
 
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	for ok == false {
@@ -277,28 +300,31 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 
 	//情况2: 不允许投票,
-	if reply.VoteGranted == false {
 
-		if reply.Term > rf.term {
-			fmt.Printf("	拒绝投票!(任期旧) 	%d号任务(term:%d) 拒绝给	%d号任务(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
-			rf.status = "follower"
-			rf.term = reply.Term
+	if reply.Sign == OldTerm {
+		fmt.Printf("	拒绝投票!(任期旧) 	raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
+		rf.status = "follower"
+		rf.term = reply.Term
 
-			rf.voteFor = -1
-			rf.voteCount = 0
-			rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
-			rf.timer.Reset(rf.overtime)
-		} else {
-			fmt.Printf("	拒绝投票!(日志旧或者已经投票) 	%d号任务(term:%d) 拒绝给	%d号任务(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
-			//这里是因为  candidate’s log is not at
-			//least as up-to-date as receiver’s log,
-		}
+		rf.voteFor = -1
+		rf.voteCount = 0
+		rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+		rf.timer.Reset(rf.overtime)
+		return false
+	}
 
+	if reply.Sign == AlreadyVote {
+		fmt.Printf("	拒绝投票!(投了其他raft) 	raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
+		return false
+	}
+
+	if reply.Sign == OldLog {
+		fmt.Printf("	拒绝投票!(日志旧) raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
 		return false
 	}
 
 	//情况3: 允许投票,记录票数
-	fmt.Printf("	同意投票! 	%d号任务(term:%d) 同意给	%d号任务(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
+	fmt.Printf("	同意投票! 	raft(%d)(term:%d) 同意给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
 	if rf.voteCount <= len(rf.peers)/2 {
 		rf.voteCount++
 	}
@@ -310,7 +336,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		}
 
 		rf.status = "leader"
-		fmt.Printf("新leader!!     第%d号任务已经有选票%d,已经进入leader状态\n", rf.me, rf.voteCount)
+		fmt.Printf("新leader!!     raft(%d)已经有选票%d,已经进入leader状态\n", rf.me, rf.voteCount)
 		//2b 初始化nextIndex[],默认leader的所有日志都已经匹配,所有下一个需要匹配的logEntry为len(rf.logs)
 		for i, _ := range rf.nextIndex {
 			if i == rf.me {
