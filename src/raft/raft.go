@@ -337,9 +337,6 @@ type AppendEntriesArgs struct {
 	Entries []LogEntry
 
 	LeaderCommit int
-
-	//Log[PreLogIndex],方便调试,好看控制台中 对应的index是否匹配
-	PreLogEntry LogEntry
 }
 
 // AppendEntriesReply 中Sign的枚举
@@ -359,8 +356,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("收到日志追加请求!\n收到日志追加请求! raft%v(term:%v;preLogindex:%v;preLogterm:%v;committedIndex:%v;PreLog:%v;entries:%v)\n收到日志追加请求! 发给raft%v(term:%v;lastLogIndex:%v;committedIndex:%v;logs:%v)的追加请求\n",
-		args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.PreLogEntry, args.Entries, rf.me, rf.term, (len(rf.logs) - 1), rf.committedIndex, rf.logs)
+	fmt.Printf("收到日志追加请求!\n收到日志追加请求! raft%v(term:%v;preLogindex:%v;preLogterm:%v;committedIndex:%v;entries:%v)\n收到日志追加请求! 发给raft%v(term:%v;lastLogIndex:%v;committedIndex:%v;logs:%v)的追加请求\n",
+		args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries, rf.me, rf.term, (len(rf.logs) - 1), rf.committedIndex, rf.logs)
 
 	// Your code here (2A, 2B).
 	reply.Term = rf.term
@@ -492,7 +489,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			arg.Entries = append(arg.Entries, LogsTemp[rf.nextIndex[server]:]...)
 		}
 
-		arg.PreLogEntry = LogsTemp[arg.PrevLogIndex]
 		go rf.sendAppendEntries(server, &arg, &reply, LogsTemp)
 		return false
 	}
@@ -675,8 +671,6 @@ func (rf *Raft) ticker() {
 						// 保证循环各个raft追加过程中,logs[]一样,引入LogsTemp
 						arg.Entries = append(arg.Entries, LogsTemp[rf.nextIndex[j]:]...)
 					}
-
-					arg.PreLogEntry = LogsTemp[arg.PrevLogIndex]
 
 					go rf.sendAppendEntries(j, &arg, &reply, LogsTemp)
 				}
