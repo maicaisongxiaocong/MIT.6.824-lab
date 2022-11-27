@@ -18,7 +18,10 @@ package raft
 //
 
 import (
+	"6.824/labgob"
+	"bytes"
 	"fmt"
+	"log"
 	"math/rand"
 	//	"bytes"
 	"sync"
@@ -117,6 +120,19 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	// Example:
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	e.Encode(rf.logs)
+	e.Encode(rf.term)
+	e.Encode(rf.voteFor)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
+
+	fmt.Printf("[ persist() ] raft(%v) {term:%v;voteFor:%v;logs:%v}  \n", rf.me, rf.term, rf.voteFor, rf.logs)
+
 }
 
 // restore previously persisted state.
@@ -137,6 +153,22 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var logs []LogEntry
+	var term int
+	var voteFor int
+	if d.Decode(&logs) != nil ||
+		d.Decode(&term) != nil ||
+		d.Decode(&voteFor) != nil {
+		log.Fatal("rf read persist err!")
+	} else {
+		rf.logs = logs
+		rf.term = term
+		rf.voteFor = voteFor
+	}
+	fmt.Printf("[ readPersist() ] raft(%v)  \n", rf.me)
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -242,8 +274,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//情况4:请求raft的任期大,同意投票,如果当前raft为candidate,变为follower
 	if args.Term > rf.term { //candidate 发现比自己高的任期的candidate发来投票请求
 		rf.term = args.Term
-
 		rf.voteFor = -1
+
+		rf.persist()
 		rf.voteCount = 0
 
 		if rf.status != "candidate" {
@@ -258,6 +291,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Sign = SuccessVote
 
 	rf.voteFor = args.CandidateId
+	rf.persist()
 
 	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
 	rf.timer.Reset(rf.overtime)
@@ -327,6 +361,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		rf.term = reply.Term
 
 		rf.voteFor = -1
+		rf.persist()
 		rf.voteCount = 0
 		rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
 		rf.timer.Reset(rf.overtime)
@@ -456,17 +491,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		//4, Append any new entries not already in the log
 		rf.logs = append(rf.logs, args.Entries...)
+		rf.persist()
 	}
 
 	//情况4: 心跳功能
-	rf.status = "follower"
-	rf.term = args.Term
+	if rf.term < args.Term {
+		rf.status = "follower"
+		rf.term = args.Term
+		rf.voteCount = 0
+		rf.voteFor = -1
+		rf.persist()
+	}
 
 	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
 	rf.timer.Reset(rf.overtime)
-
-	rf.voteCount = 0
-	rf.voteFor = -1
 
 	//情况5: commit日志功能
 	//5: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -527,6 +565,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		rf.term = reply.Term
 
 		rf.voteFor = -1
+		rf.persist()
+
 		rf.voteCount = 0
 		rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
 		rf.timer.Reset(rf.overtime)
@@ -632,16 +672,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = true
 
 	entry := LogEntry{Command: command, Term: rf.term}
-	fmt.Println("----------------------------------分割线------------------------------------------")
-	fmt.Printf("客户提交请求!(raft:%v;term:%v)\n客户提交请求! start lastLagIndex = %v;\n客户提交请求! \n", rf.me, rf.term, len(rf.logs)-1)
-	//fmt.Printf("客户提交请求!(raft:%v;term:%v)\n客户提交请求! start lastLagIndex = %v;\n客户提交请求! logs:%v\n", rf.me, rf.term, len(rf.logs)-1, rf.logs)
 	rf.logs = append(rf.logs, entry)
+	rf.persist()
+
 	index = len(rf.logs) - 1
 	term = rf.term
-	fmt.Printf("客户提交请求! end lastLagIndex = %v;\n客户提交请求! \n", len(rf.logs)-1)
 	//fmt.Printf("客户提交请求! end lastLagIndex = %v;\n客户提交请求! logs:%v\n", len(rf.logs)-1, rf.logs)
-	//
-	fmt.Println("----------------------------------分割线------------------------------------------")
 	return index, term, isLeader
 }
 
@@ -692,12 +728,16 @@ func (rf *Raft) ticker() {
 				fallthrough
 			case "candidate":
 				rf.term++
+				rf.persist()
+
 				rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
 				rf.timer.Reset(rf.overtime)
 
 				rf.voteFor = rf.me
-				rf.voteCount = 1 //rf.voteCount++错误,率先进入第三轮选举就会被当选
 				fmt.Printf("(轮数:%d)candidate!!!		第%d号任务已经进入candidate状态\n", rf.term, rf.me)
+				rf.persist()
+
+				rf.voteCount = 1 //rf.voteCount++错误,率先进入第三轮选举就会被当选
 
 				for i := 0; i < len(rf.peers); i++ {
 					if i == rf.me {
