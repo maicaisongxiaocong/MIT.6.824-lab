@@ -131,7 +131,7 @@ func (rf *Raft) persist() {
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 
-	fmt.Printf("[ persist() ] raft(%v) {term:%v;voteFor:%v;logs:%v}  \n", rf.me, rf.term, rf.voteFor, rf.logs)
+	//fmt.Printf("[ persist() ] raft(%v) {term:%v;voteFor:%v;logs:%v}  \n", rf.me, rf.term, rf.voteFor, rf.logs)
 
 }
 
@@ -548,13 +548,18 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况1: 收到 之前term的过期的rpc回复
 	if args.Term < rf.term {
-		fmt.Printf("收到过期日志rpc回复(term小)! raft(%v,oldterm:%v;nowterm%v) to raft(%v)\n", rf.me, args.Term, rf.term, server)
+		//fmt.Printf("过期日志rpc回复(term小)! raft(%v,oldterm:%v;nowterm%v) to raft(%v)\n", rf.me, args.Term, rf.term, server)
 		return false
 	}
 
 	//情况1.2: 收到同一term 但是committedIndex小的过期rpc回复
 	if reply.Sign == LowCommittedIndex {
-		fmt.Printf("收到过期日志rpc回复(committedIndex小)! raft(%v,oldcommittedIndex:%v;nowcommittedIndex%v) to raft(%v)\n", rf.me, args.LeaderCommit, rf.committedIndex, server)
+		//fmt.Printf("过期日志rpc回复(committedIndex小)! raft(%v,oldcommittedIndex:%v;nowcommittedIndex%v) to raft(%v)\n", rf.me, args.LeaderCommit, rf.committedIndex, server)
+		return false
+	}
+
+	//保证幂等性  之前的rpc回复 最近才处理, 详情见错误3.1
+	if args.PrevLogIndex != rf.nextIndex[server]-1 {
 		return false
 	}
 
@@ -573,11 +578,14 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		return false
 
 	}
+
 	//情况3: 若是因为PrevLogIndex或PrevLogTerm不匹配,nextindex减1,重传rpc
 	if reply.Sign == MismatchIndex {
 		fmt.Printf("追加日志失败!(index不匹配)		%d号任务给%d号任务追加日志\n", rf.me, server)
 
 		rf.nextIndex[server]--
+
+		fmt.Printf("raft[%v]		{nextIndex:%v}\n", rf.me, rf.nextIndex)
 
 		reply := AppendEntriesReply{}
 
@@ -784,6 +792,7 @@ func (rf *Raft) ticker() {
 					arg.PrevLogIndex = rf.nextIndex[j] - 1
 
 					if arg.PrevLogIndex > 0 {
+						fmt.Printf("raft(%v)	term:%v;PreLogIndex:%v;logs:%v;to raft(%v)\n", rf.me, rf.term, arg.PrevLogIndex, len(rf.logs)-1, j)
 						arg.PrevLogTerm = LogsTemp[arg.PrevLogIndex].Term
 					}
 
