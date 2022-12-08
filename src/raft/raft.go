@@ -53,7 +53,7 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-var HeartBeatTimeout = 100 * time.Millisecond
+var HeartBeatTimeout = 50 * time.Millisecond
 
 // 日志项
 type LogEntry struct {
@@ -128,6 +128,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.logs)
 	e.Encode(rf.term)
 	e.Encode(rf.voteFor)
+	e.Encode(rf.committedIndex)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 
@@ -159,14 +160,17 @@ func (rf *Raft) readPersist(data []byte) {
 	var logs []LogEntry
 	var term int
 	var voteFor int
+	var committedIndex int
 	if d.Decode(&logs) != nil ||
 		d.Decode(&term) != nil ||
-		d.Decode(&voteFor) != nil {
+		d.Decode(&voteFor) != nil ||
+		d.Decode(&committedIndex) != nil {
 		log.Fatal("rf read persist err!")
 	} else {
 		rf.logs = logs
 		rf.term = term
 		rf.voteFor = voteFor
+		rf.committedIndex = committedIndex
 	}
 	fmt.Printf("[ readPersist() ] raft(%v)  \n", rf.me)
 }
@@ -231,6 +235,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	//fmt.Printf("RequestVote()	{raft%v term:%v	to raft%v	term:%v}\n", args.CandidateId, args.Term, rf.me, rf.term)
+
 	reply.VoteGranted = false
 	reply.Term = rf.term
 
@@ -279,7 +285,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.persist()
 		rf.voteCount = 0
 
-		if rf.status != "candidate" {
+		if rf.status != "follower" {
 			rf.status = "follower"
 		}
 
@@ -369,7 +375,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 
 	if reply.Sign == AlreadyVote {
-		fmt.Printf("	拒绝投票!(投了其他raft) 	raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
+		fmt.Printf("	拒绝投票!(投了) 	raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
 		return false
 	}
 
@@ -443,10 +449,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//fmt.Printf("收到日志追加请求!\n收到日志追加请求! raft%v(term:%v;preLogindex:%v;preLogterm:%v;committedIndex:%v;entries:%v)\n收到日志追加请求! 发给raft%v(term:%v;lastLogIndex:%v;committedIndex:%v;logs:%v)的追加请求\n",
-	//	args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries, rf.me, rf.term, (len(rf.logs) - 1), rf.committedIndex, rf.logs)
-	fmt.Printf("收到日志追加请求! raft%v(term:%v;preLogindex:%v;preLogterm:%v;committedIndex:%v)\n收到日志追加请求! 发给raft%v(term:%v;lastLogIndex:%v;committedIndex:%v;)的追加请求\n",
-		args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, rf.me, rf.term, (len(rf.logs) - 1), rf.committedIndex)
+	//fmt.Printf("AppendEntries()   {	raft:%v	term:%v	preLogindex:%v	log.len:%v	committedIndex:%v	}\n			   {	raft%v	term:%v	lastLogIndex:%v	committedIndex:%v	}\n",
+	//	args.LeaderId, args.Term, args.PrevLogIndex, len(args.Entries), args.LeaderCommit, rf.me, rf.term, (len(rf.logs) - 1), rf.committedIndex)
 
 	// Your code here (2A, 2B).
 	reply.Term = rf.term
@@ -509,7 +513,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//情况5: commit日志功能
 	//5: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.committedIndex {
-		fmt.Printf("同步committedndex!\n同步committedndex! raft%d(committedIndex:%v)\n同步committedndex! 给raft%d(committedIndex:%v)(lastLagIndex: %v)\n", args.LeaderId, args.LeaderCommit, rf.me, rf.committedIndex, len(rf.logs)-1)
+		fmt.Printf("committedndex!	{ raft%d comIdx:%v to raft%d comIdx:%v lastLagIndex:%v	}\n", args.LeaderId, args.LeaderCommit, rf.me, rf.committedIndex, len(rf.logs)-1)
 		rf.committedIndex = func(a int, b int) int {
 			if a < b {
 				return a
@@ -585,30 +589,33 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 		rf.nextIndex[server]--
 
-		fmt.Printf("raft[%v]		{nextIndex:%v}\n", rf.me, rf.nextIndex)
+		//fmt.Printf("raft[%v]		{nextIndex:%v}\n", rf.me, rf.nextIndex)
 
-		reply := AppendEntriesReply{}
+		//若是index不匹配,不立即追加日志等到下个追加倒计时开始再追加,否则导致其他raft节点不能及时的收到日志追加(心跳),转为candidate
+		/*
+			reply := AppendEntriesReply{}
 
-		arg := AppendEntriesArgs{
-			Term:     args.Term,
-			LeaderId: args.LeaderId,
+			arg := AppendEntriesArgs{
+				Term:     args.Term,
+				LeaderId: args.LeaderId,
 
-			PrevLogIndex: args.PrevLogIndex - 1, //减少1
-			PrevLogTerm:  0,
-			Entries:      nil,
+				PrevLogIndex: args.PrevLogIndex - 1, //减少1
+				PrevLogTerm:  0,
+				Entries:      nil,
 
-			LeaderCommit: args.LeaderCommit,
-		}
+				LeaderCommit: args.LeaderCommit,
+			}
 
-		if arg.PrevLogIndex > 0 {
-			arg.PrevLogTerm = rf.logs[arg.PrevLogIndex].Term
-		}
-		//重新复制entries
-		if rf.nextIndex[server] <= len(LogsTemp)-1 && rf.nextIndex[server] > 0 {
-			arg.Entries = append(arg.Entries, LogsTemp[rf.nextIndex[server]:]...)
-		}
+			if arg.PrevLogIndex > 0 {
+				arg.PrevLogTerm = rf.logs[arg.PrevLogIndex].Term
+			}
+			//重新复制entries
+			if rf.nextIndex[server] <= len(LogsTemp)-1 && rf.nextIndex[server] > 0 {
+				arg.Entries = append(arg.Entries, LogsTemp[rf.nextIndex[server]:]...)
+			}
 
-		go rf.sendAppendEntries(server, &arg, &reply, LogsTemp)
+			go rf.sendAppendEntries(server, &arg, &reply, LogsTemp)
+		*/
 		return false
 	}
 
@@ -681,6 +688,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	entry := LogEntry{Command: command, Term: rf.term}
 	rf.logs = append(rf.logs, entry)
+	//fmt.Printf("start()	{	raft:%v	term:%v	log.len:%v	}\n", rf.me, rf.term, len(rf.logs)-1)
 	rf.persist()
 
 	index = len(rf.logs) - 1
@@ -742,7 +750,7 @@ func (rf *Raft) ticker() {
 				rf.timer.Reset(rf.overtime)
 
 				rf.voteFor = rf.me
-				fmt.Printf("(轮数:%d)candidate!!!		第%d号任务已经进入candidate状态\n", rf.term, rf.me)
+				fmt.Printf("candidate!!!		{	raft:%v term:%v LastlogIndex:%v lastTerm:%v	}\n", rf.me, rf.term, len(rf.logs)-1, rf.logs[len(rf.logs)-1].Term)
 				rf.persist()
 
 				rf.voteCount = 1 //rf.voteCount++错误,率先进入第三轮选举就会被当选
@@ -762,7 +770,7 @@ func (rf *Raft) ticker() {
 					}
 
 					reply := RequestVoteReply{}
-					fmt.Printf("发起投票! 	第%d号任务(term:%d)向第%d号任务发起投票\n", rf.me, rf.term, i)
+					fmt.Printf("发起投票! 	{	raft%v term:%d to raft%d\n", rf.me, rf.term, i)
 
 					go rf.sendRequestVote(i, &arg, &reply)
 				}
@@ -792,7 +800,7 @@ func (rf *Raft) ticker() {
 					arg.PrevLogIndex = rf.nextIndex[j] - 1
 
 					if arg.PrevLogIndex > 0 {
-						fmt.Printf("raft(%v)	term:%v;PreLogIndex:%v;logs:%v;to raft(%v)\n", rf.me, rf.term, arg.PrevLogIndex, len(rf.logs)-1, j)
+						//fmt.Printf("raft(%v)	term:%v;PreLogIndex:%v;logs:%v;to raft(%v)\n", rf.me, rf.term, arg.PrevLogIndex, len(rf.logs)-1, j)
 						arg.PrevLogTerm = LogsTemp[arg.PrevLogIndex].Term
 					}
 
