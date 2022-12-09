@@ -246,7 +246,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	//情况2: 已经投票,且不是投的args.CandidateId,拒绝
+	//情况2: 已经投票,且不是投的args.CandidateId
 	if args.Term == rf.term && rf.voteFor != -1 && rf.voteFor != args.CandidateId {
 		reply.Sign = AlreadyVote
 		return
@@ -259,9 +259,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//end with the same term, then whichever log is longer is
 	//more up-to-date.
 
-	//获得当前raft的logs的最新logEntry的index和term
-	//panic: runtime error: index out of range [1] with length 1
-	//注意-1
 	currentLogIndex := len(rf.logs) - 1
 	currentLogTerm := 0
 
@@ -291,7 +288,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	}
 
-	//情况5:未投过票的raft,或者在情况2中的raft(由candidate变为follower的raft),
+	//情况5:已经投过该candidateId的raft,未投过票的raft,或者在情况2中的raft(由candidate或leader变为follower的raft),
 
 	reply.VoteGranted = true
 	reply.Sign = SuccessVote
@@ -438,6 +435,10 @@ const (
 type AppendEntriesReply struct {
 	Term int
 	Sign int
+
+	//优化日志匹配
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -464,30 +465,53 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	//情况2: index或者term不匹配
 
-	currentIndex := len(rf.logs) - 1
-	//currentTerm := 0
-	if currentIndex > 0 {
-		//panic: runtime error: index out of range [1] with length 1
-		// currentTerm := len(rf.logs) - 1,必须减1
-		//currentTerm = rf.logs[currentIndex].Term
-	}
+	currentLastIndex := len(rf.logs) - 1
 
 	//leader 给disconnected()的raft 发appendEntries() rpc
-	//当raft 又 connected()后 之前的appendEntries() rpc的到响应,这里把他门排除
+	//当raft 又 connected()后 之前的appendEntries() rpc得到响应,这里把他门排除
 	if args.LeaderCommit < rf.committedIndex {
 		reply.Sign = LowCommittedIndex
 		return
 	}
-	//2, Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
-	if args.PrevLogIndex > currentIndex || args.PrevLogTerm != rf.logs[args.PrevLogIndex].Term {
+
+	//心跳重置
+	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+	rf.timer.Reset(rf.overtime)
+
+	//任期小 变为follower 并改变term
+	if rf.term < args.Term {
+		rf.status = "follower"
+		rf.term = args.Term
+		rf.voteCount = 0
+		rf.voteFor = -1
+		rf.persist()
+	}
+
+	//情况3: 下标不匹配
+	//Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
+	if args.PrevLogIndex > currentLastIndex || args.PrevLogTerm != rf.logs[args.PrevLogIndex].Term {
 		reply.Sign = MismatchIndex
+
+		if args.PrevLogIndex > currentLastIndex {
+			//reply.ConflictIndex = currentLastIndex + 1 //不要加1
+			reply.ConflictIndex = currentLastIndex
+			reply.ConflictTerm = 0
+		} else {
+			reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
+			for i := 1; i <= args.PrevLogIndex; i++ {
+				if rf.logs[i].Term == rf.logs[args.PrevLogIndex].Term {
+					reply.ConflictIndex = i
+					break
+				}
+			}
+		}
 		return
 	}
 
 	//以下情况返回成功
 	reply.Sign = SuccessEntry
 
-	//情况3: 日志不为空,删除该raft的logs匹配日志项后面的所有日志项,然后追加日志
+	//情况4:下标匹配 日志不为空,删除该raft的logs匹配日志项后面的所有日志项,然后追加日志
 	if len(args.Entries) != 0 {
 		//3, If an existing entry conflicts with a new one (same index but different terms),
 		//delete the existing entry and all that follow it (§5.3)
@@ -498,19 +522,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.persist()
 	}
 
-	//情况4: 心跳功能
-	if rf.term < args.Term {
-		rf.status = "follower"
-		rf.term = args.Term
-		rf.voteCount = 0
-		rf.voteFor = -1
-		rf.persist()
-	}
-
-	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
-	rf.timer.Reset(rf.overtime)
-
-	//情况5: commit日志功能
+	// commit日志功能
 	//5: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.committedIndex {
 		fmt.Printf("committedndex!	{ raft%d comIdx:%v to raft%d comIdx:%v lastLagIndex:%v	}\n", args.LeaderId, args.LeaderCommit, rf.me, rf.committedIndex, len(rf.logs)-1)
@@ -520,7 +532,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			return b
 		}(args.LeaderCommit, len(rf.logs)-1) // len(rf.logs) - 1
-
 	}
 
 }
@@ -585,9 +596,20 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况3: 若是因为PrevLogIndex或PrevLogTerm不匹配,nextindex减1,重传rpc
 	if reply.Sign == MismatchIndex {
-		fmt.Printf("追加日志失败!(index不匹配)		%d号任务给%d号任务追加日志\n", rf.me, server)
+		fmt.Printf("追加失败!(index不匹配)	{	raft%v(nextIndex:%v) to raft%v	}\n", rf.me, rf.nextIndex[server], server)
+		//prelogIndex > currentLogIndex 和 当前raft log中找不到comflictIndex两种情况
+		rf.nextIndex[server] = reply.ConflictIndex
 
-		rf.nextIndex[server]--
+		//
+		i := args.PrevLogIndex
+		for ; i > 0; i-- {
+			if reply.ConflictTerm == rf.logs[i].Term {
+				rf.nextIndex[server] = i
+				break
+			}
+		}
+
+		return false
 
 		//fmt.Printf("raft[%v]		{nextIndex:%v}\n", rf.me, rf.nextIndex)
 
@@ -616,7 +638,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 			go rf.sendAppendEntries(server, &arg, &reply, LogsTemp)
 		*/
-		return false
+
 	}
 
 	//接下都是追加成功的
@@ -750,7 +772,7 @@ func (rf *Raft) ticker() {
 				rf.timer.Reset(rf.overtime)
 
 				rf.voteFor = rf.me
-				fmt.Printf("candidate!!!		{	raft:%v term:%v LastlogIndex:%v lastTerm:%v	}\n", rf.me, rf.term, len(rf.logs)-1, rf.logs[len(rf.logs)-1].Term)
+				fmt.Printf("candidate!!!(%v)		{	raft:%v term:%v LastlogIndex:%v lastTerm:%v	}\n", rf.term, rf.me, rf.term, len(rf.logs)-1, rf.logs[len(rf.logs)-1].Term)
 				rf.persist()
 
 				rf.voteCount = 1 //rf.voteCount++错误,率先进入第三轮选举就会被当选
