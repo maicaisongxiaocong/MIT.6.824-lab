@@ -20,7 +20,6 @@ package raft
 import (
 	"6.824/labgob"
 	"bytes"
-	"fmt"
 	"log"
 	"math/rand"
 	//	"bytes"
@@ -172,7 +171,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.voteFor = voteFor
 		rf.committedIndex = committedIndex
 	}
-	fmt.Printf(" readPersist! { raft(%v) } \n", rf.me)
+	//fmt.Printf(" readPersist! { raft(%v) } \n", rf.me)
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -296,7 +295,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.voteFor = args.CandidateId
 	rf.persist()
 
-	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+	rf.overtime = time.Duration(100+rand.Intn(250)) * time.Millisecond
 	rf.timer.Reset(rf.overtime)
 
 }
@@ -359,30 +358,30 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	//情况2: 不允许投票,
 
 	if reply.Sign == OldTerm {
-		fmt.Printf("	拒绝投票!(任期旧) 	raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
+		//fmt.Printf("	拒绝投票!(任期旧) 	raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
 		rf.status = "follower"
 		rf.term = reply.Term
 
 		rf.voteFor = -1
 		rf.persist()
 		rf.voteCount = 0
-		rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+		rf.overtime = time.Duration(100+rand.Intn(250)) * time.Millisecond
 		rf.timer.Reset(rf.overtime)
 		return false
 	}
 
 	if reply.Sign == AlreadyVote {
-		fmt.Printf("	拒绝投票!(投了) 	raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
+		//fmt.Printf("	拒绝投票!(投了) 	raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
 		return false
 	}
 
 	if reply.Sign == OldLog {
-		fmt.Printf("	拒绝投票!(日志旧) raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
+		//fmt.Printf("	拒绝投票!(日志旧) raft(%d)(term:%d) 拒绝给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
 		return false
 	}
 
 	//情况3: 允许投票,记录票数
-	fmt.Printf("	同意投票! 	raft(%d)(term:%d) 同意给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
+	//fmt.Printf("	同意投票! 	raft(%d)(term:%d) 同意给	raft(%d)(term:%d) 投票\n", server, reply.Term, rf.me, rf.term)
 	if rf.voteCount <= len(rf.peers)/2 {
 		rf.voteCount++
 	}
@@ -394,7 +393,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		}
 
 		rf.status = "leader"
-		fmt.Printf("新leader!!     raft(%d)已经有选票%d,已经进入leader状态\n", rf.me, rf.voteCount)
+		//	fmt.Printf("新leader!!     raft(%d)已经有选票%d,已经进入leader状态\n", rf.me, rf.voteCount)
 		//2b 初始化nextIndex[],默认leader的所有日志都已经匹配,所有下一个需要匹配的logEntry为len(rf.logs)
 		for i, _ := range rf.nextIndex {
 			if i == rf.me {
@@ -475,7 +474,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	//心跳重置
-	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+	rf.overtime = time.Duration(100+rand.Intn(250)) * time.Millisecond
 	rf.timer.Reset(rf.overtime)
 
 	//任期小 变为follower 并改变term
@@ -580,7 +579,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况2: 若是因为任期太旧,leader转为follower
 	if reply.Sign == LowTerm {
-		fmt.Printf("entries failed!(LowTerm)		to follower,{	raft(%d) term:%v to raft(%d) term:%v	}\n", rf.me, args.Term, server, reply.Term)
+		//	fmt.Printf("entries failed!(LowTerm)		to follower,{	raft(%d) term:%v to raft(%d) term:%v	}\n", rf.me, args.Term, server, reply.Term)
 		rf.status = "follower"
 		rf.term = reply.Term
 
@@ -588,7 +587,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		rf.persist()
 
 		rf.voteCount = 0
-		rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+		rf.overtime = time.Duration(100+rand.Intn(250)) * time.Millisecond
 		rf.timer.Reset(rf.overtime)
 		return false
 
@@ -596,7 +595,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况3: 若是因为PrevLogIndex或PrevLogTerm不匹配,nextindex减1,重传rpc
 	if reply.Sign == MismatchIndex {
-		fmt.Printf("entries failed!(MismatchIndex)	{	raft%v(nextIndex:%v) to raft%v conflictIndex:%v conflictTerm:%v	}\n", rf.me, rf.nextIndex[server], server, reply.ConflictIndex, reply.ConflictTerm)
+		//fmt.Printf("entries failed!(MismatchIndex)	{	raft%v(nextIndex:%v) to raft%v conflictIndex:%v conflictTerm:%v	}\n", rf.me, rf.nextIndex[server], server, reply.ConflictIndex, reply.ConflictTerm)
 		//prelogIndex > currentLogIndex 和 当前raft log中找不到comflictIndex两种情况
 		rf.nextIndex[server] = reply.ConflictIndex
 
@@ -623,13 +622,13 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况4: 没有日志,心跳功能成功
 	if len(args.Entries) == 0 {
-		fmt.Printf("SuccessEntry!(heartBeat)	{	raft(%d) to raft(%d)	}\n", rf.me, server)
+		//	fmt.Printf("SuccessEntry!(heartBeat)	{	raft(%d) to raft(%d)	}\n", rf.me, server)
 		return true
 	}
 
 	//情况5: 有日志,追加成功,则该改变对应的nextIndex,统计追加成功的raft个数
 	rf.nextIndex[server] += len(args.Entries)
-	fmt.Printf("SuccessEntry!	{	raft(%d) to raft(%d)	}\n", rf.me, server)
+	//fmt.Printf("SuccessEntry!	{	raft(%d) to raft(%d)	}\n", rf.me, server)
 
 	if rf.appendCount <= len(rf.peers)/2 {
 		rf.appendCount++
@@ -644,7 +643,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		if rf.committedIndex < args.PrevLogIndex+len(args.Entries) {
 
 			rf.committedIndex = args.PrevLogIndex + len(args.Entries)
-			fmt.Printf("committed!	{	leader(%d) committedIndex:%v	}\n", rf.me, rf.committedIndex)
+			//	fmt.Printf("committed!	{	leader(%d) committedIndex:%v	}\n", rf.me, rf.committedIndex)
 
 		}
 	}
@@ -688,7 +687,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	entry := LogEntry{Command: command, Term: rf.term}
 	rf.logs = append(rf.logs, entry)
-	fmt.Printf("start()	{	raft(%v) term:%v log.len:%v	}\n", rf.me, rf.term, len(rf.logs)-1)
+	//fmt.Printf("start()	{	raft(%v) term:%v log.len:%v	}\n", rf.me, rf.term, len(rf.logs)-1)
 	rf.persist()
 
 	index = len(rf.logs) - 1
@@ -745,11 +744,11 @@ func (rf *Raft) ticker() {
 				rf.term++
 				rf.persist()
 
-				rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+				rf.overtime = time.Duration(100+rand.Intn(250)) * time.Millisecond
 				rf.timer.Reset(rf.overtime)
 
 				rf.voteFor = rf.me
-				fmt.Printf("candidate!!!		raft:%v(term:%v) {	 LastlogIndex:%v lastTerm:%v committedIndex:%v}\n", rf.me, rf.term, len(rf.logs)-1, rf.logs[len(rf.logs)-1].Term, rf.committedIndex)
+				//fmt.Printf("candidate!!!		raft:%v(term:%v) {	 LastlogIndex:%v lastTerm:%v committedIndex:%v}\n", rf.me, rf.term, len(rf.logs)-1, rf.logs[len(rf.logs)-1].Term, rf.committedIndex)
 				rf.persist()
 
 				rf.voteCount = 1 //rf.voteCount++错误,率先进入第三轮选举就会被当选
@@ -769,7 +768,7 @@ func (rf *Raft) ticker() {
 					}
 
 					reply := RequestVoteReply{}
-					fmt.Printf("sendRequestVote! 	{	raft%v term:%d to raft%d\n", rf.me, rf.term, i)
+					//fmt.Printf("sendRequestVote! 	{	raft%v term:%d to raft%d\n", rf.me, rf.term, i)
 
 					go rf.sendRequestVote(i, &arg, &reply)
 				}
@@ -807,7 +806,7 @@ func (rf *Raft) ticker() {
 						// 保证循环各个raft追加过程中,logs[]一样,引入LogsTemp
 						arg.Entries = append(arg.Entries, LogsTemp[rf.nextIndex[j]:]...)
 					}
-					fmt.Printf("sendAppendEntries! 	{	raft%v term:%d to raft%d	}\n", rf.me, rf.term, j)
+					//fmt.Printf("sendAppendEntries! 	{	raft%v term:%d to raft%d	}\n", rf.me, rf.term, j)
 
 					go rf.sendAppendEntries(j, &arg, &reply, LogsTemp)
 				}
@@ -841,7 +840,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.status = "follower"
 	rf.term = 0
 
-	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond
+	rf.overtime = time.Duration(100+rand.Intn(250)) * time.Millisecond
 	rf.timer = time.NewTicker(rf.overtime)
 
 	rf.voteFor = -1
@@ -887,7 +886,7 @@ func (rf *Raft) synchronizeAppliedIndex() {
 			continue
 		}
 
-		fmt.Printf("synAppliedIndex!	{	raft(%v) appliedIndex:%v  committedIndex:%v	}\n", rf.me, rf.appliedIndex, rf.committedIndex)
+		//fmt.Printf("synAppliedIndex!	{	raft(%v) appliedIndex:%v  committedIndex:%v	}\n", rf.me, rf.appliedIndex, rf.committedIndex)
 		for rf.appliedIndex < rf.committedIndex {
 
 			rf.appliedIndex++
