@@ -172,7 +172,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.voteFor = voteFor
 		rf.committedIndex = committedIndex
 	}
-	fmt.Printf("[ readPersist() ] raft(%v)  \n", rf.me)
+	fmt.Printf(" readPersist! { raft(%v) } \n", rf.me)
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -525,7 +525,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// commit日志功能
 	//5: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.committedIndex {
-		fmt.Printf("committedndex!	{ raft%d comIdx:%v to raft%d comIdx:%v lastLagIndex:%v	}\n", args.LeaderId, args.LeaderCommit, rf.me, rf.committedIndex, len(rf.logs)-1)
+		//fmt.Printf("committedndex!	{ raft%d comIdx:%v to raft%d comIdx:%v lastLagIndex:%v	}\n", args.LeaderId, args.LeaderCommit, rf.me, rf.committedIndex, len(rf.logs)-1)
 		rf.committedIndex = func(a int, b int) int {
 			if a < b {
 				return a
@@ -580,7 +580,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况2: 若是因为任期太旧,leader转为follower
 	if reply.Sign == LowTerm {
-		fmt.Printf("追加日志失败!(任期旧)		变为follower,%d号任务给%d号任务追加日志\n", rf.me, server)
+		fmt.Printf("entries failed!(LowTerm)		to follower,{	raft(%d) term:%v to raft(%d) term:%v	}\n", rf.me, args.Term, server, reply.Term)
 		rf.status = "follower"
 		rf.term = reply.Term
 
@@ -596,7 +596,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况3: 若是因为PrevLogIndex或PrevLogTerm不匹配,nextindex减1,重传rpc
 	if reply.Sign == MismatchIndex {
-		fmt.Printf("追加失败!(index不匹配)	{	raft%v(nextIndex:%v) to raft%v	}\n", rf.me, rf.nextIndex[server], server)
+		fmt.Printf("entries failed!(MismatchIndex)	{	raft%v(nextIndex:%v) to raft%v conflictIndex:%v conflictTerm:%v	}\n", rf.me, rf.nextIndex[server], server, reply.ConflictIndex, reply.ConflictTerm)
 		//prelogIndex > currentLogIndex 和 当前raft log中找不到comflictIndex两种情况
 		rf.nextIndex[server] = reply.ConflictIndex
 
@@ -609,35 +609,13 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			}
 		}
 
+		//特殊情况,防止preLogIndex = -1,导致appendEntries()中rf.logs[args.PrevLogIndex]出现下标溢出
+		//见错误3c,测试7 TestReliableChurn2C()
+		if rf.nextIndex[server] == 0 {
+			rf.nextIndex[server]++
+		}
+
 		return false
-
-		//fmt.Printf("raft[%v]		{nextIndex:%v}\n", rf.me, rf.nextIndex)
-
-		//若是index不匹配,不立即追加日志等到下个追加倒计时开始再追加,否则导致其他raft节点不能及时的收到日志追加(心跳),转为candidate
-		/*
-			reply := AppendEntriesReply{}
-
-			arg := AppendEntriesArgs{
-				Term:     args.Term,
-				LeaderId: args.LeaderId,
-
-				PrevLogIndex: args.PrevLogIndex - 1, //减少1
-				PrevLogTerm:  0,
-				Entries:      nil,
-
-				LeaderCommit: args.LeaderCommit,
-			}
-
-			if arg.PrevLogIndex > 0 {
-				arg.PrevLogTerm = rf.logs[arg.PrevLogIndex].Term
-			}
-			//重新复制entries
-			if rf.nextIndex[server] <= len(LogsTemp)-1 && rf.nextIndex[server] > 0 {
-				arg.Entries = append(arg.Entries, LogsTemp[rf.nextIndex[server]:]...)
-			}
-
-			go rf.sendAppendEntries(server, &arg, &reply, LogsTemp)
-		*/
 
 	}
 
@@ -645,13 +623,13 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况4: 没有日志,心跳功能成功
 	if len(args.Entries) == 0 {
-		fmt.Printf("追加日志成功!(心跳)		%d号任务给%d号任务追加日志\n", rf.me, server)
+		fmt.Printf("SuccessEntry!(heartBeat)	{	raft(%d) to raft(%d)	}\n", rf.me, server)
 		return true
 	}
 
 	//情况5: 有日志,追加成功,则该改变对应的nextIndex,统计追加成功的raft个数
 	rf.nextIndex[server] += len(args.Entries)
-	fmt.Printf("追加日志成功!		%d号任务给%d号任务追加日志\n", rf.me, server)
+	fmt.Printf("SuccessEntry!	{	raft(%d) to raft(%d)	}\n", rf.me, server)
 
 	if rf.appendCount <= len(rf.peers)/2 {
 		rf.appendCount++
@@ -662,11 +640,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		if args.LeaderCommit < rf.committedIndex {
 			return true
 		}
-		//rf.committedIndex = rf.committedIndex + len(args.Entries)
+
 		if rf.committedIndex < args.PrevLogIndex+len(args.Entries) {
 
 			rf.committedIndex = args.PrevLogIndex + len(args.Entries)
-			fmt.Printf("成功被大多数raft接受!		leader(%d) committedIndex:%v\n", rf.me, rf.committedIndex)
+			fmt.Printf("committed!	{	leader(%d) committedIndex:%v	}\n", rf.me, rf.committedIndex)
 
 		}
 	}
@@ -710,12 +688,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	entry := LogEntry{Command: command, Term: rf.term}
 	rf.logs = append(rf.logs, entry)
-	//fmt.Printf("start()	{	raft:%v	term:%v	log.len:%v	}\n", rf.me, rf.term, len(rf.logs)-1)
+	fmt.Printf("start()	{	raft(%v) term:%v log.len:%v	}\n", rf.me, rf.term, len(rf.logs)-1)
 	rf.persist()
 
 	index = len(rf.logs) - 1
 	term = rf.term
-	//fmt.Printf("客户提交请求! end lastLagIndex = %v;\n客户提交请求! logs:%v\n", len(rf.logs)-1, rf.logs)
 	return index, term, isLeader
 }
 
@@ -772,7 +749,7 @@ func (rf *Raft) ticker() {
 				rf.timer.Reset(rf.overtime)
 
 				rf.voteFor = rf.me
-				fmt.Printf("candidate!!!(%v)		{	raft:%v term:%v LastlogIndex:%v lastTerm:%v	}\n", rf.term, rf.me, rf.term, len(rf.logs)-1, rf.logs[len(rf.logs)-1].Term)
+				fmt.Printf("candidate!!!		raft:%v(term:%v) {	 LastlogIndex:%v lastTerm:%v committedIndex:%v}\n", rf.me, rf.term, len(rf.logs)-1, rf.logs[len(rf.logs)-1].Term, rf.committedIndex)
 				rf.persist()
 
 				rf.voteCount = 1 //rf.voteCount++错误,率先进入第三轮选举就会被当选
@@ -792,7 +769,7 @@ func (rf *Raft) ticker() {
 					}
 
 					reply := RequestVoteReply{}
-					fmt.Printf("发起投票! 	{	raft%v term:%d to raft%d\n", rf.me, rf.term, i)
+					fmt.Printf("sendRequestVote! 	{	raft%v term:%d to raft%d\n", rf.me, rf.term, i)
 
 					go rf.sendRequestVote(i, &arg, &reply)
 				}
@@ -822,7 +799,6 @@ func (rf *Raft) ticker() {
 					arg.PrevLogIndex = rf.nextIndex[j] - 1
 
 					if arg.PrevLogIndex > 0 {
-						//fmt.Printf("raft(%v)	term:%v;PreLogIndex:%v;logs:%v;to raft(%v)\n", rf.me, rf.term, arg.PrevLogIndex, len(rf.logs)-1, j)
 						arg.PrevLogTerm = LogsTemp[arg.PrevLogIndex].Term
 					}
 
@@ -831,6 +807,7 @@ func (rf *Raft) ticker() {
 						// 保证循环各个raft追加过程中,logs[]一样,引入LogsTemp
 						arg.Entries = append(arg.Entries, LogsTemp[rf.nextIndex[j]:]...)
 					}
+					fmt.Printf("sendAppendEntries! 	{	raft%v term:%d to raft%d	}\n", rf.me, rf.term, j)
 
 					go rf.sendAppendEntries(j, &arg, &reply, LogsTemp)
 				}
@@ -910,7 +887,7 @@ func (rf *Raft) synchronizeAppliedIndex() {
 			continue
 		}
 
-		fmt.Printf("提交状态机!raft(%v)	start appliedIndex:%v  committedIndex:%v\n", rf.me, rf.appliedIndex, rf.committedIndex)
+		fmt.Printf("synAppliedIndex!	{	raft(%v) appliedIndex:%v  committedIndex:%v	}\n", rf.me, rf.appliedIndex, rf.committedIndex)
 		for rf.appliedIndex < rf.committedIndex {
 
 			rf.appliedIndex++
@@ -922,7 +899,6 @@ func (rf *Raft) synchronizeAppliedIndex() {
 			}
 			rf.appliedChan <- am
 		}
-		fmt.Printf("提交状态机!raft(%v)	end appliedIndex:%v  committedIndex:%v \n", rf.me, rf.appliedIndex, rf.committedIndex)
 		rf.mu.Unlock()
 	}
 }
