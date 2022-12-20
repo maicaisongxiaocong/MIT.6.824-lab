@@ -91,6 +91,10 @@ type Raft struct {
 	//todo: 作用区别
 	nextIndex  []int
 	matchIndex []int
+
+	//2d
+	lastIncludeIndex int //最近一次snapshot 的index 用来计算log的没有压缩日志状态的下标(index + lastIncludeIndex)
+	lastIncludeTerm  int
 }
 
 // return currentTerm and whether this server
@@ -188,7 +192,33 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
+
 	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	//1 snapshot 入 appliedChan
+	am := ApplyMsg{
+		SnapshotValid: true,
+		SnapshotIndex: index,
+		SnapshotTerm:  rf.logs[index-rf.lastIncludeIndex-1].Term,
+		Snapshot:      snapshot,
+	}
+
+	rf.appliedChan <- am
+
+	//todo: 考虑需不需要持久化
+	rf.lastIncludeIndex = index
+	rf.lastIncludeTerm = rf.logs[index-rf.lastIncludeIndex-1].Term
+
+	//2 剪日志
+	tlog := make([]LogEntry, 1) //第一个日志元素当作哨兵
+	tlog = append(tlog, rf.logs[index+1:]...)
+	rf.logs = tlog
+	rf.persist()
+
+	//3 持久化snapshot
+	rf.persister.SaveStateAndSnapshot(rf.persister.raftstate, snapshot)
 
 }
 
@@ -466,6 +496,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	currentLastIndex := len(rf.logs) - 1
 
+	//同一term但是committedIndex小
 	//leader 给disconnected()的raft 发appendEntries() rpc
 	//当raft 又 connected()后 之前的appendEntries() rpc得到响应,这里把他门排除
 	if args.LeaderCommit < rf.committedIndex {
@@ -859,6 +890,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	rf.nextIndex = make([]int, len(rf.peers))
+
+	//2d
+	rf.lastIncludeTerm = 0
+	rf.lastIncludeIndex = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

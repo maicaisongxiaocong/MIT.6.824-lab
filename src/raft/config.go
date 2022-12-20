@@ -251,7 +251,8 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 				var xlog []interface{}
 				for j := 0; j <= m.CommandIndex; j++ {
 					xlog = append(xlog, cfg.logs[i][j])
-				}
+				} //
+				// todo 猜测 append(xlog,nil)不改变xlog 因为这里的CommandIndex为 需要减去当前raft的lastincludeIndex 才是logs对应的index
 				e.Encode(xlog)
 				rf.Snapshot(m.CommandIndex, w.Bytes())
 			}
