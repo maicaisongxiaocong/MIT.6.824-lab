@@ -253,6 +253,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		return
 	}
 
+	fmt.Printf("[InstallSnapshot] (raft%v term%v to raft%v term%v )\n", args.LeaderId, args.Term, rf.me, rf.term)
+
 	//2 请求rpc的raft term小
 	if args.Term < rf.term {
 		return
@@ -302,6 +304,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.lastIncludeIndex = args.LastIncludedIndex
 	rf.lastIncludeTerm = args.LastIncludedTerm
+	rf.appliedIndex = rf.lastIncludeIndex
+	rf.committedIndex = rf.lastIncludeIndex
+	rf.persist()
 
 }
 
@@ -337,13 +342,14 @@ func (rf *Raft) sentInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 		rf.status = "Follower"
 		rf.voteFor = -1
 		rf.voteCount = 0
+		rf.term = reply.Term
 
 		rf.resetVoteOverTime()
-		fmt.Printf("[sentInstallSnapshot]	[shift to Follower]	{raft %v,term %v,reply.Term %v }\n", args.LeaderId, args.Term, reply.Term)
+		fmt.Printf("[recieveInstallSnapshot]	[shift to Follower]	{raft%v,term%v to raft%v,reply.Term%v }\n", args.LeaderId, args.Term, server, reply.Term)
 		return true
 	}
 
-	fmt.Printf("[sentInstallSnapshot]	[Success!]	{raft %v, term %v,lastIncludeIndex %v,lastIncludeTerm %v}\n", args.LeaderId, args.Term, args.LastIncludedIndex, args.LastIncludedTerm)
+	fmt.Printf("[recieveInstallSnapshot]	[Success!]	{raft%v,term%v to raft%v lastIncludeIndex %v,lastIncludeTerm %v}\n", args.LeaderId, args.Term, server, args.LastIncludedIndex, args.LastIncludedTerm)
 
 	return true
 }
@@ -660,7 +666,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//得到当前log的最后一个entry的逻辑下标
 	postCurrentLastIndex := rf.getPostSnapshotLogIndex(len(rf.logs) - 1)
 
-	postPrevLogTerm := rf.logs[rf.getAfterSnapshotLogIndex(args.PrevLogIndex)].Term
+	postPrevLogTerm := 0 //若不满足以下两个情况,postPrevLogTerm = 0,表示长度不够
+	if rf.getAfterSnapshotLogIndex(args.PrevLogIndex) <= len(rf.logs)-1 {
+		postPrevLogTerm = rf.logs[rf.getAfterSnapshotLogIndex(args.PrevLogIndex)].Term
+	}
 	if args.PrevLogIndex == rf.lastIncludeIndex {
 		postPrevLogTerm = rf.lastIncludeTerm
 	}
