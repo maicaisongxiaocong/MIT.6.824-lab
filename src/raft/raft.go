@@ -146,7 +146,7 @@ func (rf *Raft) persist() {
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 
-	//fmt.Printf("[ persist() ] raft(%v) {term:%v;voteFor:%v;logs:%v}  \n", rf.me, rf.term, rf.voteFor, rf.logs)
+	//fmt.Printf("[persist] (raft%v) {term%v}\n", rf.me, rf.term)
 
 }
 
@@ -191,8 +191,9 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.committedIndex = committedIndex
 		rf.lastIncludeIndex = lastIncludeIndex
 		rf.lastIncludeTerm = lastIncludeTerm
+		rf.appliedIndex = lastIncludeIndex
 	}
-	//fmt.Printf(" readPersist! { raft(%v) } \n", rf.me)
+	fmt.Printf(" [readPersist] (raft%v)\n", rf.me)
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -227,7 +228,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	rf.persist()
 
-	fmt.Printf("[snapshot] (raft%v) 	{ lastIncludeIndex%v,lastLogIndex%v,lastIncludeTerm%v}\n", rf.me, rf.lastIncludeIndex, len(rf.logs)-1, rf.lastIncludeTerm)
+	fmt.Printf("[snapshot()] (raft%v) {lastIncludeIndex%v,lastLogIndex%v,lastIncludeTerm%v}\n", rf.me, rf.lastIncludeIndex, len(rf.logs)-1, rf.lastIncludeTerm)
 
 	//2 持久化snapshot
 	rf.persister.SaveStateAndSnapshot(rf.persister.raftstate, snapshot)
@@ -256,10 +257,10 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	reply.Term = rf.term
 
 	//1 对于term过期的rpc,直接返回
-	if args.LastIncludedIndex < rf.lastIncludeIndex {
+	if args.LastIncludedIndex < rf.lastIncludeIndex || args.LastIncludedIndex < rf.committedIndex {
 		return
 	}
-	fmt.Printf("[InstallSnapshot] (raft%v term%v to raft%v term%v )\n", args.LeaderId, args.Term, rf.me, rf.term)
+	fmt.Printf("[InstallSnapshot()] (raft%v,term%v to raft%v,term%v)\n", args.LeaderId, args.Term, rf.me, rf.term)
 
 	//2 请求rpc的raft term小
 	if args.Term < rf.term {
@@ -355,7 +356,7 @@ func (rf *Raft) sentInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 		return true
 	}
 
-	fmt.Printf("[recieveInstallSnapshot]	[Success]	{raft%v,term%v to raft%v lastIncludeIndex %v,lastIncludeTerm %v}\n", args.LeaderId, args.Term, server, args.LastIncludedIndex, args.LastIncludedTerm)
+	fmt.Printf("[sentInstallSnapshot] [Success] {raft%v,term%v to raft%v lastIncludeIndex %v,lastIncludeTerm %v}\n", args.LeaderId, args.Term, server, args.LastIncludedIndex, args.LastIncludedTerm)
 
 	return true
 }
@@ -772,7 +773,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况2: 若是因为任期太旧,leader转为follower
 	if reply.Sign == LowTerm {
-		fmt.Printf("[entries failed LowTerm] [to FOLLOWER]	(raft%d term%v to raft%d term%v)\n", rf.me, args.Term, server, reply.Term)
+		fmt.Printf("[LowTerm] [to follower] (raft%d term%v to raft%d term%v)\n", rf.me, args.Term, server, reply.Term)
 		rf.status = FOLLOWER
 		rf.term = reply.Term
 
@@ -788,7 +789,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	//情况3: 若是因为PrevLogIndex或PrevLogTerm不匹配,nextindex减1,重传rpc
 	if reply.Sign == MismatchIndex {
-		fmt.Printf("[entries failed MismatchIndex] (raft%v to raft%v ) {nextIndex%v conflictIndex%v conflictTerm%v}\n", rf.me, server, rf.nextIndex[server], reply.ConflictIndex, reply.ConflictTerm)
+		fmt.Printf("[mismatchIndex] (raft%v to raft%v ) {nextIndex%v conflictIndex%v conflictTerm%v}\n", rf.me, server, rf.nextIndex[server], reply.ConflictIndex, reply.ConflictTerm)
 		//prelogIndex > currentLogIndex 和 当前raft log中找不到comflictIndex两种情况
 		rf.nextIndex[server] = reply.ConflictIndex
 
@@ -834,7 +835,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		if rf.committedIndex < args.PrevLogIndex+len(args.Entries) {
 
 			rf.committedIndex = args.PrevLogIndex + len(args.Entries)
-			fmt.Printf("[commit]	(raft%d) { committedIndex%v}\n", rf.me, rf.committedIndex)
+			fmt.Printf("[commit]	(raft%d) {committedIndex%v}\n", rf.me, rf.committedIndex)
 
 		}
 	}
@@ -1113,6 +1114,7 @@ func (rf *Raft) synchronizeAppliedIndex() {
 		}
 
 		message := make([]ApplyMsg, 0)
+		//fmt.Printf("[syn] (raft%v) {appliedIndex%v, committedIndex%v,lastIncludeIndex%v}\n", rf.me, rf.appliedIndex, rf.committedIndex, rf.lastIncludeIndex)
 		for rf.appliedIndex < rf.committedIndex {
 			rf.appliedIndex++
 
@@ -1137,6 +1139,6 @@ func (rf *Raft) synchronizeAppliedIndex() {
 			rf.appliedChan <- temp
 		}
 
-		fmt.Printf("[synAppliedIndex!] {raft%v appliedIndex%v committedIndex%v}\n", rf.me, rf.appliedIndex, rf.committedIndex)
+		fmt.Printf("[synAppliedIndex!] {raft%v,appliedIndex%v,committedIndex%v}\n", rf.me, rf.appliedIndex, rf.committedIndex)
 	}
 }

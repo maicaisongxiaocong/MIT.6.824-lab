@@ -202,6 +202,7 @@ func (cfg *config) ingestSnap(i int, snapshot []byte, index int) string {
 	for j := 0; j < len(xlog); j++ {
 		cfg.logs[i][j] = xlog[j]
 	}
+
 	cfg.lastApplied[i] = lastIncludedIndex
 	return ""
 }
@@ -240,6 +241,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 				}
 			}
 
+			fmt.Printf("[applierSnap] (raft%v) {lastApplied%v,commandIndex%v}\n", i, cfg.lastApplied[i], m.CommandIndex)
 			cfg.mu.Lock()
 			cfg.lastApplied[i] = m.CommandIndex
 			cfg.mu.Unlock()
